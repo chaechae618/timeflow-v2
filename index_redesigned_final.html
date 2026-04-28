@@ -1,0 +1,1435 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>TimeFlow — 시계열 예측 워크스페이스</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Pretendard:wght@400;500;600;700;800&display=swap');
+
+    :root {
+      --bg: #f0f2f7;
+      --surface: #ffffff;
+      --border: #e2e8f0;
+      --border-strong: #cbd5e1;
+      --text: #0f172a;
+      --text-soft: #475569;
+      --text-muted: #94a3b8;
+      --primary: #2563eb;
+      --primary-soft: #eff6ff;
+      --green: #16a34a;
+      --green-soft: #f0fdf4;
+      --green-border: #bbf7d0;
+      --yellow: #d97706;
+      --yellow-soft: #fffbeb;
+      --yellow-border: #fde68a;
+      --red: #dc2626;
+      --red-soft: #fef2f2;
+      --red-border: #fecaca;
+      --purple: #7c3aed;
+      --shadow-sm: 0 1px 3px rgba(15,23,42,.06), 0 1px 2px rgba(15,23,42,.04);
+      --shadow: 0 4px 16px rgba(15,23,42,.07);
+      --radius: 14px;
+      --sidebar-w: 300px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Pretendard', 'Noto Sans KR', sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ── TOPBAR ── */
+    .topbar {
+      position: sticky; top: 0; z-index: 40;
+      background: rgba(255,255,255,.95);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+      padding: 0 24px;
+      height: 56px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand-mark {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: linear-gradient(135deg,#2563eb,#7c3aed);
+      display: grid; place-items: center;
+      color: #fff; font-weight: 800; font-size: 13px; flex-shrink: 0;
+    }
+    .brand-name { font-size: 16px; font-weight: 800; letter-spacing: -.02em; }
+    .brand-sub  { font-size: 12px; color: var(--text-soft); }
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--green-soft); border: 1px solid var(--green-border);
+      color: var(--green); border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 600;
+    }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+    /* ── LAYOUT ── */
+    .page { display: flex; height: calc(100vh - 56px); overflow: hidden; }
+
+    /* SIDEBAR */
+    .sidebar {
+      width: var(--sidebar-w); flex-shrink: 0;
+      background: var(--surface); border-right: 1px solid var(--border);
+      overflow-y: auto; padding: 20px 16px 32px;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+    .panel {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px;
+    }
+    .panel-step {
+      font-size: 10px; font-weight: 800; color: var(--primary);
+      letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px;
+    }
+    .panel-title { font-size: 15px; font-weight: 800; margin-bottom: 6px; }
+    .panel-desc  { font-size: 12px; color: var(--text-soft); margin-bottom: 12px; line-height: 1.6; }
+
+    .upload-zone {
+      border: 1.5px dashed #bfdbfe; background: #f8fbff; border-radius: 12px;
+      padding: 20px 12px; text-align: center; cursor: pointer; transition: .2s;
+    }
+    .upload-zone:hover, .upload-zone.drag { background: #eff6ff; border-color: #93c5fd; }
+    .upload-icon { font-size: 28px; margin-bottom: 6px; }
+    .upload-title { font-size: 13px; font-weight: 700; margin-bottom: 2px; }
+    .upload-sub   { font-size: 12px; color: var(--text-soft); }
+    input[type="file"] { display: none; }
+
+    .ctrl-label {
+      display: flex; justify-content: space-between;
+      font-size: 12px; font-weight: 700; margin-bottom: 6px;
+    }
+    .ctrl-val { color: var(--primary); }
+    select {
+      width: 100%; height: 38px; border-radius: 10px;
+      border: 1px solid var(--border-strong); background: #fff;
+      padding: 0 12px; font-size: 13px; color: var(--text); outline: none;
+    }
+    input[type="range"] { width: 100%; accent-color: var(--primary); }
+
+    .checkbox-group { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+    .checkbox-item {
+      display: flex; align-items: center; gap: 10px; padding: 9px 11px;
+      border: 1px solid var(--border); border-radius: 10px; background: #fff; cursor: pointer;
+      transition: .15s;
+    }
+    .checkbox-item:hover { border-color: #93c5fd; background: var(--primary-soft); }
+    .checkbox-item input { width: 16px; height: 16px; accent-color: var(--primary); flex-shrink: 0; }
+    .cb-name { font-size: 13px; font-weight: 700; }
+    .cb-desc { font-size: 11px; color: var(--text-soft); }
+    .tag {
+      flex-shrink: 0; font-size: 10px; font-weight: 700; padding: 3px 7px;
+      border-radius: 999px; background: #ecfdf3; color: #15803d;
+    }
+    .tag-ml  { background: #fffbeb; color: #92400e; }
+
+    .action-group { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+    .btn {
+      width: 100%; height: 42px; border-radius: 12px; border: none;
+      font-size: 14px; font-weight: 800; cursor: pointer; transition: .2s;
+    }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #1d4ed8; transform: translateY(-1px); }
+    .btn-primary:disabled { background: #cbd5e1; color: #64748b; cursor: not-allowed; }
+    .btn-secondary { background: #fff; color: var(--text); border: 1px solid var(--border-strong); }
+    .btn-secondary:hover { background: #f8fafc; }
+
+    .progress-wrap { display: none; margin-top: 10px; }
+    .progress-bar-bg { height: 6px; background: #e5e7eb; border-radius: 999px; overflow: hidden; margin-top: 4px; }
+    .progress-bar-fill {
+      height: 100%; width: 0%; background: linear-gradient(90deg,#2563eb,#7c3aed);
+      transition: width .3s ease;
+    }
+    .progress-label { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-soft); }
+
+    .diag-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+    .diag-card { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+    .diag-lbl { font-size: 10px; color: var(--text-muted); margin-bottom: 2px; }
+    .diag-val { font-size: 15px; font-weight: 800; }
+    .diag-val.ok   { color: var(--green); }
+    .diag-val.warn { color: var(--yellow); }
+    .diag-val.err  { color: var(--red); }
+
+    .alert-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+    .alert-item { border-radius: 8px; padding: 8px 10px; font-size: 11px; border-left: 3px solid; }
+    .alert-ok   { background: var(--green-soft);  border-color: var(--green);  color: var(--green); }
+    .alert-warn { background: var(--yellow-soft); border-color: var(--yellow); color: var(--yellow); }
+    .alert-err  { background: var(--red-soft);    border-color: var(--red);    color: var(--red); }
+
+    /* ── MAIN ── */
+    .main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+
+    /* KPI STRIP */
+    .kpi-strip {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 14px 24px; display: none;
+      grid-template-columns: repeat(8, 1fr); gap: 0;
+    }
+    .kpi-strip.visible { display: grid; }
+    .kpi-item {
+      padding: 0 16px; border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; justify-content: center;
+    }
+    .kpi-item:first-child { padding-left: 0; }
+    .kpi-item:last-child  { border-right: none; }
+    .kpi-lbl { font-size: 10px; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 2px; }
+    .kpi-val { font-size: 20px; font-weight: 800; letter-spacing: -.02em; font-family: 'DM Mono', monospace; }
+    .kpi-sub { font-size: 10px; color: var(--text-soft); margin-top: 1px; }
+    .kpi-val.green  { color: var(--green); }
+    .kpi-val.yellow { color: var(--yellow); }
+    .kpi-val.red    { color: var(--red); }
+
+    /* STEP FLOW */
+    .flow-bar {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 10px 24px; display: none; align-items: center; gap: 0; overflow-x: auto;
+    }
+    .flow-bar.visible { display: flex; }
+    .flow-step {
+      display: flex; align-items: center; gap: 6px; padding: 6px 14px;
+      border-radius: 999px; font-size: 12px; font-weight: 700;
+      white-space: nowrap; color: var(--text-muted);
+    }
+    .flow-step.active { background: var(--primary-soft); color: var(--primary); }
+    .flow-step.done   { color: var(--green); }
+    .flow-num {
+      width: 20px; height: 20px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 800;
+      background: #e2e8f0; color: var(--text-muted);
+    }
+    .flow-step.active .flow-num { background: var(--primary); color: #fff; }
+    .flow-step.done .flow-num   { background: var(--green); color: #fff; }
+    .flow-arrow { color: #cbd5e1; padding: 0 2px; font-size: 14px; }
+
+    /* TABS */
+    .tabs-bar {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 0 24px; display: none; gap: 0; overflow-x: auto;
+    }
+    .tabs-bar.visible { display: flex; }
+    .tab {
+      padding: 14px 16px; font-size: 13px; font-weight: 700;
+      color: var(--text-soft); border: none; background: none;
+      border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap;
+      transition: .15s;
+    }
+    .tab:hover  { color: var(--text); }
+    .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+    /* CONTENT */
+    .content { flex: 1; padding: 24px; }
+    .section { display: none; }
+    .section.active { display: block; }
+
+    /* EMPTY STATE */
+    .empty-state {
+      height: 100%; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; text-align: center; padding: 40px;
+    }
+    .empty-icon { font-size: 56px; margin-bottom: 16px; opacity: .6; }
+    .empty-title { font-size: 22px; font-weight: 800; margin-bottom: 8px; }
+    .empty-desc  { font-size: 14px; color: var(--text-soft); max-width: 480px; line-height: 1.7; }
+    .empty-pills { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 20px; }
+    .pill {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 999px; padding: 6px 14px; font-size: 12px; color: var(--text-soft);
+    }
+
+    /* CARDS */
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px; margin-bottom: 16px;
+      box-shadow: var(--shadow-sm);
+    }
+    .card-title { font-size: 14px; font-weight: 800; margin-bottom: 4px; }
+    .card-sub   { font-size: 12px; color: var(--text-soft); margin-bottom: 14px; line-height: 1.6; }
+
+    .info-box {
+      background: var(--primary-soft); border: 1px solid #bfdbfe;
+      border-radius: 10px; padding: 12px 14px; font-size: 12px;
+      line-height: 1.7; color: var(--text-soft); margin-bottom: 14px;
+    }
+    .info-box strong { color: var(--text); }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+
+    /* STAT MINI */
+    .stat-mini { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+    .stat-mini-lbl { font-size: 10px; color: var(--text-muted); font-weight: 700; text-transform: uppercase; margin-bottom: 4px; }
+    .stat-mini-val { font-size: 18px; font-weight: 800; font-family: 'DM Mono', monospace; }
+
+    /* PREPROCESS CARD */
+    .pp-card {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px;
+    }
+    .pp-step { font-size: 10px; font-weight: 800; color: var(--primary); text-transform: uppercase; margin-bottom: 4px; }
+    .pp-method { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+    .pp-why   { font-size: 11px; color: var(--text-soft); line-height: 1.6; }
+
+    /* ADF RESULT */
+    .adf-result {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    }
+    .adf-box {
+      border-radius: 10px; padding: 14px;
+    }
+    .adf-box.stationary { background: var(--green-soft); border: 1px solid var(--green-border); }
+    .adf-box.nonstationary { background: var(--yellow-soft); border: 1px solid var(--yellow-border); }
+    .adf-tag { font-size: 11px; font-weight: 800; margin-bottom: 6px; }
+    .adf-tag.ok  { color: var(--green); }
+    .adf-tag.warn { color: var(--yellow); }
+    .adf-title { font-size: 16px; font-weight: 800; margin-bottom: 4px; }
+    .adf-desc  { font-size: 12px; color: var(--text-soft); line-height: 1.6; }
+
+    /* LEADERBOARD */
+    .lb-table { width: 100%; border-collapse: collapse; }
+    .lb-table th {
+      text-align: left; padding: 10px 12px; font-size: 11px; font-weight: 800;
+      text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted);
+      background: var(--bg); border-bottom: 1px solid var(--border);
+    }
+    .lb-table td { padding: 11px 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
+    .lb-table tr:last-child td { border-bottom: none; }
+    .lb-table tr:hover td { background: var(--primary-soft); }
+    .model-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+    .best-badge {
+      font-size: 10px; font-weight: 800; background: var(--green-soft);
+      color: var(--green); border: 1px solid var(--green-border);
+      border-radius: 999px; padding: 2px 8px; margin-left: 6px;
+    }
+    .naive-badge {
+      font-size: 10px; font-weight: 800; background: #f1f5f9;
+      color: #64748b; border-radius: 999px; padding: 2px 8px; margin-left: 6px;
+    }
+    .smape-bar-wrap { display: flex; align-items: center; gap: 8px; }
+    .smape-bar-bg { flex: 1; height: 6px; background: var(--bg); border-radius: 999px; overflow: hidden; }
+    .smape-bar-fill { height: 100%; border-radius: 999px; transition: width .4s; }
+    .ts-ok  { color: var(--green); font-weight: 700; }
+    .ts-bad { color: var(--red);   font-weight: 700; }
+    .mase-ok  { color: var(--green); font-weight: 700; }
+    .mase-bad { color: var(--red);   font-weight: 700; }
+
+    /* VERDICT */
+    .verdict-wrap { margin-bottom: 16px; }
+    .verdict-banner {
+      border-radius: var(--radius); padding: 20px 24px;
+      display: flex; align-items: center; gap: 16px;
+    }
+    .verdict-banner.trust      { background: var(--green-soft);  border: 2px solid var(--green-border); }
+    .verdict-banner.conditional { background: var(--yellow-soft); border: 2px solid var(--yellow-border); }
+    .verdict-banner.review     { background: var(--red-soft);    border: 2px solid var(--red-border); }
+    .verdict-icon { font-size: 36px; }
+    .verdict-label { font-size: 22px; font-weight: 800; margin-bottom: 2px; }
+    .verdict-label.trust { color: var(--green); }
+    .verdict-label.conditional { color: var(--yellow); }
+    .verdict-label.review { color: var(--red); }
+    .verdict-sub { font-size: 13px; color: var(--text-soft); }
+
+    .checks-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+    .check-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px; display: flex; gap: 12px; align-items: flex-start;
+    }
+    .check-card.pass { border-left: 4px solid var(--green); }
+    .check-card.fail { border-left: 4px solid var(--red); }
+    .check-icon { font-size: 20px; flex-shrink: 0; margin-top: 2px; }
+    .check-name { font-size: 13px; font-weight: 800; margin-bottom: 3px; }
+    .check-detail { font-size: 12px; color: var(--text-soft); line-height: 1.6; }
+
+    .verdict-msgs { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+    .verdict-msg {
+      border-radius: 10px; padding: 10px 14px; font-size: 13px; line-height: 1.6;
+      border-left: 3px solid;
+    }
+    .verdict-msg.ok   { background: var(--green-soft);  border-color: var(--green);  color: #166534; }
+    .verdict-msg.warn { background: var(--yellow-soft); border-color: var(--yellow); color: #92400e; }
+    .verdict-msg.err  { background: var(--red-soft);    border-color: var(--red);    color: #991b1b; }
+
+    /* BACKTEST STATS */
+    .bt-stat { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+    .bt-lbl { font-size: 11px; color: var(--text-muted); font-weight: 700; margin-bottom: 4px; }
+    .bt-val { font-size: 18px; font-weight: 800; font-family: 'DM Mono', monospace; }
+
+    /* FORECAST TABLE */
+    .fc-table { width: 100%; border-collapse: collapse; }
+    .fc-table th {
+      background: var(--bg); text-align: left; padding: 9px 10px;
+      font-size: 11px; font-weight: 800; text-transform: uppercase; color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .fc-table td { padding: 9px 10px; font-size: 13px; border-bottom: 1px solid var(--border); font-family: 'DM Mono', monospace; }
+    .fc-table tr:hover td { background: var(--primary-soft); }
+
+    /* RESIDUAL STATS */
+    .res-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+
+    /* NEWS */
+    .news-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; }
+    .news-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px; transition: .2s;
+    }
+    .news-card:hover { border-color: var(--primary); box-shadow: 0 4px 16px rgba(37,99,235,.1); transform: translateY(-2px); }
+    .news-src  { font-size: 11px; color: var(--text-muted); font-weight: 700; margin-bottom: 6px; }
+    .news-title { font-size: 13px; font-weight: 800; color: var(--text); margin-bottom: 6px; line-height: 1.4; }
+    .news-desc  { font-size: 12px; color: var(--text-soft); line-height: 1.5; }
+
+    /* INSIGHT TEXT */
+    .insight-text { font-size: 14px; line-height: 1.8; color: var(--text-soft); white-space: pre-wrap; }
+    .insight-text h2 { font-size: 15px; font-weight: 800; color: var(--text); margin: 16px 0 6px; }
+
+    /* HORIZON SLIDER */
+    .horizon-note {
+      background: var(--primary-soft); border: 1px solid #bfdbfe;
+      border-radius: 10px; padding: 10px 14px; font-size: 12px;
+      color: var(--primary); margin-top: 8px; font-weight: 600;
+    }
+
+    @media (max-width: 1100px) {
+      .grid-4 { grid-template-columns: 1fr 1fr; }
+      .kpi-strip { grid-template-columns: repeat(4, 1fr); }
+      .news-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 800px) {
+      :root { --sidebar-w: 100%; }
+      .page { flex-direction: column; height: auto; overflow: visible; }
+      .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); }
+      .main { height: auto; }
+      .grid-2 { grid-template-columns: 1fr; }
+      .grid-3 { grid-template-columns: 1fr 1fr; }
+      .checks-grid { grid-template-columns: 1fr; }
+      .news-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">TF</div>
+    <div>
+      <div class="brand-name">TimeFlow Forecast Workspace</div>
+      <div class="brand-sub">CSV 업로드 → 전처리 → 예측 → 판단</div>
+    </div>
+  </div>
+  <div class="status-pill">
+    <span class="status-dot"></span>
+    <span id="statusText">데이터 대기 중</span>
+  </div>
+</header>
+
+<div class="page">
+  <!-- ── SIDEBAR ── -->
+  <aside class="sidebar">
+
+    <div class="panel">
+      <div class="panel-step">Step 1</div>
+      <div class="panel-title">데이터 업로드</div>
+      <p class="panel-desc">CSV 파일을 올린 뒤 날짜·값 컬럼을 선택하세요.</p>
+      <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+        <div class="upload-icon">📊</div>
+        <div class="upload-title">CSV 파일 업로드</div>
+        <div class="upload-sub">드래그 앤 드롭 또는 클릭</div>
+      </div>
+      <input type="file" id="fileInput" accept=".csv" onchange="handleFile(event)"/>
+      <div id="columnSelect" style="display:none;margin-top:12px;">
+        <div style="margin-bottom:8px;">
+          <div class="ctrl-label"><span>날짜 컬럼</span></div>
+          <select id="dateCol" onchange="validateSelection()"></select>
+        </div>
+        <div>
+          <div class="ctrl-label"><span>값 컬럼</span></div>
+          <select id="valueCol" onchange="validateSelection()"></select>
+        </div>
+      </div>
+      <div id="diagReport" style="display:none;"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-step">Step 2</div>
+      <div class="panel-title">분석 설정</div>
+      <p class="panel-desc">시평(h)이 바뀌면 모든 지표가 재계산됩니다.</p>
+
+      <div style="margin-bottom:12px;">
+        <div class="ctrl-label"><span>예측 기간 (h)</span><span class="ctrl-val" id="horizonVal">30</span></div>
+        <input type="range" id="horizonSlider" min="7" max="180" value="30"
+          oninput="document.getElementById('horizonVal').textContent=this.value"/>
+        <div class="horizon-note">📐 시평이 길수록 MAPE가 상승합니다. 최종판단 탭에서 확인하세요.</div>
+      </div>
+
+      <div style="margin-bottom:12px;">
+        <div class="ctrl-label"><span>신뢰구간</span><span class="ctrl-val" id="ciVal">90%</span></div>
+        <input type="range" id="ciSlider" min="50" max="99" value="90"
+          oninput="document.getElementById('ciVal').textContent=this.value+'%'"/>
+      </div>
+
+      <div>
+        <div class="ctrl-label"><span>모델 선택</span></div>
+        <div class="checkbox-group">
+          <label class="checkbox-item">
+            <input type="checkbox" id="m_naive" checked disabled>
+            <div><div class="cb-name">Naive <small style="font-weight:400;color:#94a3b8">(기준선·필수)</small></div>
+              <div class="cb-desc">Seasonal Naive — MASE 판단 기준</div></div>
+            <span class="tag">통계</span>
+          </label>
+          <label class="checkbox-item">
+            <input type="checkbox" id="m_ets" checked>
+            <div><div class="cb-name">ETS (Holt-Winters)</div>
+              <div class="cb-desc">추세·계절성 지수평활 모델</div></div>
+            <span class="tag">통계</span>
+          </label>
+          <label class="checkbox-item">
+            <input type="checkbox" id="m_arima" checked>
+            <div><div class="cb-name">AutoARIMA</div>
+              <div class="cb-desc">AIC 기반 자동 (p,d,q) 탐색</div></div>
+            <span class="tag">통계</span>
+          </label>
+          <label class="checkbox-item">
+            <input type="checkbox" id="m_stl" checked>
+            <div><div class="cb-name">STL Forecaster</div>
+              <div class="cb-desc">계절성·추세 분리 예측 (최고 MAPE)</div></div>
+            <span class="tag">통계</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="progress-wrap" id="progressWrap">
+        <div class="progress-label"><span id="progLabel">분석 중...</span><span id="progPct">0%</span></div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="progFill"></div></div>
+      </div>
+      <div class="action-group">
+        <button class="btn btn-primary" id="runBtn" onclick="runPipeline()" disabled>예측 시작</button>
+        <button class="btn btn-secondary" onclick="loadDemo()">데모 데이터 실행</button>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ── MAIN ── -->
+  <main class="main">
+
+    <!-- KPI STRIP -->
+    <div class="kpi-strip" id="kpiStrip">
+      <div class="kpi-item"><div class="kpi-lbl">MAE</div><div class="kpi-val" id="kMAE">—</div><div class="kpi-sub">평균 절대 오차</div></div>
+      <div class="kpi-item"><div class="kpi-lbl">RMSE</div><div class="kpi-val" id="kRMSE">—</div><div class="kpi-sub">큰 오차에 민감</div></div>
+      <div class="kpi-item"><div class="kpi-lbl">SMAPE</div><div class="kpi-val" id="kSMAPE">—</div><div class="kpi-sub">대칭 절대 오차율</div></div>
+      <div class="kpi-item"><div class="kpi-lbl">MAPE</div><div class="kpi-val" id="kMAPE">—</div><div class="kpi-sub">0값 주의</div></div>
+      <div class="kpi-item"><div class="kpi-lbl">MASE</div><div class="kpi-val" id="kMASE">—</div><div class="kpi-sub">&lt;1 = Naive보다 우수</div></div>
+      <div class="kpi-item"><div class="kpi-lbl">R²</div><div class="kpi-val" id="kR2">—</div><div class="kpi-sub">설명력</div></div>
+      <div class="kpi-item"><div class="kpi-lbl">RSFE</div><div class="kpi-val" id="kRSFE">—</div><div class="kpi-sub">누적 오차</div></div>
+      <div class="kpi-item"><div class="kpi-lbl">TS</div><div class="kpi-val" id="kTS">—</div><div class="kpi-sub">±4 초과 = 편향</div></div>
+    </div>
+
+    <!-- STEP FLOW -->
+    <div class="flow-bar" id="flowBar">
+      <div class="flow-step done" id="fs1"><div class="flow-num">1</div>데이터 전처리</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step done" id="fs2"><div class="flow-num">2</div>EDA 탐색</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step done" id="fs3"><div class="flow-num">3</div>모델 선택</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step done" id="fs4"><div class="flow-num">4</div>모델 학습</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step done" id="fs5"><div class="flow-num">5</div>모델 평가</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step done" id="fs6"><div class="flow-num">6</div>예측 적용</div>
+    </div>
+
+    <!-- TABS -->
+    <div class="tabs-bar" id="tabsBar">
+      <button class="tab active" onclick="switchTab('eda',this)">📊 EDA 탐색</button>
+      <button class="tab" onclick="switchTab('forecast',this)">🔮 예측 결과</button>
+      <button class="tab" onclick="switchTab('models',this)">🏆 모델 비교</button>
+      <button class="tab" onclick="switchTab('decomp',this)">🔬 시계열 분해</button>
+      <button class="tab" onclick="switchTab('verdict',this)">✅ 최종 판단</button>
+      <button class="tab" onclick="switchTab('news',this)">📰 관련 뉴스</button>
+    </div>
+
+    <div class="content">
+
+      <!-- EMPTY STATE -->
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">📈</div>
+        <div class="empty-title">CSV를 올리면 예측이 시작됩니다</div>
+        <p class="empty-desc">왼쪽에서 파일을 업로드하고 설정을 고른 뒤 <strong>예측 시작</strong>을 누르세요.<br>전처리 → 모델 비교 → 최종 판단까지 한 흐름으로 진행됩니다.</p>
+        <div class="empty-pills">
+          <span class="pill">Naive 기준선 — MASE 판단 기준</span>
+          <span class="pill">ETS · AutoARIMA · STL 비교</span>
+          <span class="pill">신호등 판단: 신뢰 / 조건부 / 재검토</span>
+          <span class="pill">시평별 SMAPE 변화 시각화</span>
+        </div>
+      </div>
+
+      <!-- ① EDA 탐색 -->
+      <div class="section" id="tab-eda">
+        <div class="card">
+          <div class="card-title">Step 1 — 데이터 전처리 과정</div>
+          <div class="card-sub">업로드된 데이터에 자동 적용된 전처리 방법 · 이유를 확인하세요.</div>
+          <div class="grid-3" id="ppSteps"></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title">기술통계량</div>
+            <div class="card-sub">분포와 중심경향을 수치로 확인합니다.</div>
+            <div class="grid-4" id="descStats" style="margin-bottom:0;"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">정상성 검정 (ADF Test)</div>
+            <div class="card-sub">ARIMA 적용 전 필수 확인 — p &lt; 0.05이면 정상</div>
+            <div class="adf-result" id="adfResult"></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title">원본 데이터 시계열</div>
+            <div class="card-sub">전체 패턴 및 이상치 위치 확인</div>
+            <canvas id="edaRawChart" height="180"></canvas>
+          </div>
+          <div class="card">
+            <div class="card-title">원본 ACF</div>
+            <div class="card-sub">자기상관 — 계절성·주기 탐지에 활용</div>
+            <canvas id="edaAcfChart" height="180"></canvas>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">분포 특성 해석</div>
+          <div class="card-sub">왜도·첨도로 분포의 대칭성과 뾰족함을 판단합니다.</div>
+          <div id="distInterpret"></div>
+        </div>
+      </div>
+
+      <!-- ② 예측 결과 -->
+      <div class="section" id="tab-forecast">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;">
+            <div>
+              <div class="card-title">Step 6 — 예측 결과 (앙상블 적용)</div>
+              <div class="card-sub">실제값 · 피팅값 · 미래 예측값 · 신뢰구간을 함께 비교합니다.</div>
+            </div>
+            <span id="bestModelBadge" style="font-size:12px;font-weight:800;background:var(--green-soft);color:var(--green);border:1px solid var(--green-border);border-radius:999px;padding:4px 12px;white-space:nowrap;">앙상블</span>
+          </div>
+          <canvas id="forecastChart" height="300"></canvas>
+        </div>
+        <div class="card" id="forecastTableWrap" style="display:none;">
+          <div class="card-title">예측 수치</div>
+          <div class="card-sub">미래 예측값과 신뢰구간을 표로 확인합니다.</div>
+          <div style="overflow-x:auto;" id="forecastTableContent"></div>
+        </div>
+      </div>
+
+      <!-- ③ 모델 비교 -->
+      <div class="section" id="tab-models">
+        <div class="info-box">
+          <strong>Step 5 — 모델 평가:</strong> Naive 기준선과 비교해 각 모델의 가치를 판단합니다.<br>
+          • <strong>MASE &lt; 1</strong>: Naive보다 우수 (이 조건 불충족 시 해당 모델은 폐기)<br>
+          • <strong>SMAPE</strong>: <span style="color:var(--green)">10% 이하 우수</span> / <span style="color:var(--yellow)">20% 이하 양호</span> / <span style="color:var(--red)">20% 초과 미흡</span><br>
+          • <strong>TS</strong>: |TS| ≤ 4이면 편향 없음 / 초과시 편향 의심<br>
+          • AutoARIMA가 선택한 <strong>(p,d,q) 파라미터와 AIC</strong>를 함께 표시합니다.
+        </div>
+        <div class="card" style="overflow-x:auto;">
+          <div class="card-title">모델별 성능 비교</div>
+          <div class="card-sub">Naive가 기준선입니다. 모든 모델은 Naive보다 나아야 합니다.</div>
+          <table class="lb-table" id="leaderboardTable"></table>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title">모델별 SMAPE</div>
+            <div class="card-sub">Naive 점선이 기준 — 아래에 있어야 의미 있는 모델</div>
+            <canvas id="smapeChart" height="220"></canvas>
+          </div>
+          <div class="card">
+            <div class="card-title">앙상블 가중치 (OOS 기반)</div>
+            <div class="card-sub">Out-of-sample 성능 기반 각 모델의 앙상블 기여도</div>
+            <canvas id="weightChart" height="220"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- ④ 시계열 분해 + 잔차 -->
+      <div class="section" id="tab-decomp">
+        <div class="info-box">
+          <strong>STL 분해 (Seasonal-Trend decomposition using Loess):</strong><br>
+          • <strong>트렌드 강도 &gt; 0.5</strong>: 뚜렷한 장기 방향성 → ETS, STL 유효<br>
+          • <strong>계절성 강도 &gt; 0.5</strong>: 규칙적 주기 패턴 → 계절성 모델 필수<br>
+          • <strong>잔차 ACF</strong>: CI 안에 있으면 백색잡음 → 모델이 패턴을 완전히 설명함
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title">트렌드 성분</div>
+            <canvas id="trendChart" height="160"></canvas>
+          </div>
+          <div class="card">
+            <div class="card-title">계절성 성분</div>
+            <canvas id="seasonChart" height="160"></canvas>
+          </div>
+          <div class="card">
+            <div class="card-title">잔차 시계열</div>
+            <div class="card-sub">평균 ≈ 0, 패턴 없으면 모델이 데이터를 잘 설명한 것</div>
+            <canvas id="residTimeChart" height="160"></canvas>
+          </div>
+          <div class="card">
+            <div class="card-title">잔차 ACF</div>
+            <div class="card-sub">막대가 CI(점선) 안에 있으면 백색잡음 통과</div>
+            <canvas id="acfChart" height="160"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">잔차 분포</div>
+          <div class="card-sub">정규분포에 가까울수록 좋음 (왜도 ≈ 0, 첨도 ≈ 0)</div>
+          <canvas id="residHistChart" height="180"></canvas>
+        </div>
+        <div class="res-stats" id="residStats"></div>
+      </div>
+
+      <!-- ⑤ 최종 판단 -->
+      <div class="section" id="tab-verdict">
+        <div class="verdict-wrap" id="verdictBanner"></div>
+
+        <div class="card">
+          <div class="card-title">4가지 판단 기준</div>
+          <div class="card-sub">모두 통과해야 "신뢰 가능"입니다. 하나라도 실패하면 모델 재검토가 필요합니다.</div>
+          <div class="checks-grid" id="checksGrid"></div>
+        </div>
+
+        <div class="card" id="verdictMsgsCard">
+          <div class="card-title">상세 판단 메시지</div>
+          <div class="verdict-msgs" id="verdictMsgs"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">시평별 SMAPE 변화</div>
+          <div class="card-sub">h가 길수록 MAPE가 커집니다. "이 모델은 단기엔 좋지만 장기에서 나빠진다"를 직접 확인하세요.</div>
+          <canvas id="horizonChart" height="220"></canvas>
+        </div>
+
+        <div class="grid-3">
+          <div class="card">
+            <div class="card-title">STL 데이터 구조</div>
+            <div class="card-sub">트렌드·계절성 강도</div>
+            <canvas id="stlStrengthChart" height="160"></canvas>
+          </div>
+          <div class="card">
+            <div class="card-title">백테스트 요약</div>
+            <div class="card-sub">Rolling Origin — 과적합 진단</div>
+            <div id="btSummary" style="margin-top:8px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">AI 인사이트</div>
+            <div class="card-sub">Claude가 예측 결과를 종합 해석합니다</div>
+            <button onclick="loadInsight()" class="btn btn-secondary" style="margin-top:8px;">🤖 인사이트 생성</button>
+            <div id="insightText" style="margin-top:12px;"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">백테스트 결과</div>
+          <div class="card-sub">Rolling Origin: 여러 시점에서 훈련→예측→평가를 반복해 일반화 성능을 검증합니다.</div>
+          <canvas id="backtestChart" height="240"></canvas>
+          <div class="grid-3" id="btStats" style="margin-top:12px;"></div>
+        </div>
+      </div>
+
+      <!-- ⑥ 관련 뉴스 -->
+      <div class="section" id="tab-news">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+            <div>
+              <div class="card-title">관련 뉴스</div>
+              <div class="card-sub">분석 데이터와 관련된 최신 뉴스 — 최종 의사결정에 활용하세요.</div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <input id="newsKeyword" type="text" placeholder="키워드 (예: 반도체, 수요)"
+                style="padding:8px 12px;border:1px solid var(--border-strong);border-radius:10px;font-size:13px;width:200px;outline:none;"/>
+              <button onclick="loadNews()" style="padding:8px 16px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;">🔍 검색</button>
+            </div>
+          </div>
+          <div id="newsResult">
+            <div style="padding:32px;text-align:center;color:var(--text-soft);font-size:13px;background:var(--bg);border-radius:10px;">
+              키워드를 입력하고 검색하면 관련 최신 뉴스가 표시됩니다.
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+  </main>
+</div>
+
+<script>
+  // ─── STATE ───────────────────────────────────
+  const S = {
+    rawData: null, dates: [], values: [], futureDates: [],
+    dateCol: '', valueCol: '', horizon: 30, ci: 90, results: null,
+    charts: {}, _diagnostics: null, _naiveSmape: 0,
+    _strategy: '', _oosSMAPEs: {}, _horizonSmapes: {},
+  };
+
+  // ─── FILE HANDLING ────────────────────────────
+  const uploadZone = document.getElementById('uploadZone');
+  uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag'); });
+  uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag'));
+  uploadZone.addEventListener('drop', e => { e.preventDefault(); uploadZone.classList.remove('drag'); if(e.dataTransfer.files[0]) processFile(e.dataTransfer.files[0]); });
+
+  function handleFile(e) { if(e.target.files[0]) processFile(e.target.files[0]); }
+
+  function processFile(file) {
+    Papa.parse(file, {
+      header: true, dynamicTyping: true, skipEmptyLines: true,
+      complete: res => {
+        S.rawData = res.data;
+        S.currentFile = file;
+        showColumnSelect(res.meta.fields || []);
+        setStatus('파일 업로드 완료');
+      }
+    });
+  }
+
+  function showColumnSelect(fields) {
+    const colSel = document.getElementById('columnSelect');
+    const dateSel = document.getElementById('dateCol');
+    const valSel  = document.getElementById('valueCol');
+    dateSel.innerHTML = '';
+    valSel.innerHTML  = '';
+    fields.forEach(f => {
+      dateSel.innerHTML += `<option value="${f}">${f}</option>`;
+      valSel.innerHTML  += `<option value="${f}">${f}</option>`;
+    });
+    // 자동 감지
+    const dateGuess = fields.find(f => /date|time|ds|일|날짜/i.test(f)) || fields[0];
+    const valGuess  = fields.find(f => /value|val|y|수|량|amount|sales|revenue/i.test(f)) || fields[1] || fields[0];
+    dateSel.value = dateGuess;
+    valSel.value  = valGuess;
+    colSel.style.display = 'block';
+    validateSelection();
+  }
+
+  function validateSelection() {
+    const d = document.getElementById('dateCol').value;
+    const v = document.getElementById('valueCol').value;
+    if (!S.rawData) return;
+    S.dateCol = d; S.valueCol = v;
+
+    const nullCount = S.rawData.filter(r => r[v] == null || r[v] === '').length;
+    const n = S.rawData.length;
+    const dr = document.getElementById('diagReport');
+    dr.style.display = 'block';
+    dr.innerHTML = `
+      <div class="diag-grid">
+        <div class="diag-card"><div class="diag-lbl">총 행수</div><div class="diag-val">${n.toLocaleString()}</div></div>
+        <div class="diag-card"><div class="diag-lbl">결측치</div><div class="diag-val ${nullCount>0?'warn':'ok'}">${nullCount}개</div></div>
+      </div>
+      <div class="alert-list">
+        ${nullCount>0?`<div class="alert-item alert-warn">결측치 ${nullCount}개 → 선형 보간 적용</div>`:'<div class="alert-item alert-ok">결측치 없음</div>'}
+        <div class="alert-item alert-ok">데이터 검증 완료. 예측을 시작하세요.</div>
+      </div>`;
+    document.getElementById('runBtn').disabled = false;
+  }
+
+  // ─── PROGRESS ────────────────────────────────
+  function setProgress(pct, label) {
+    document.getElementById('progFill').style.width = pct + '%';
+    document.getElementById('progPct').textContent = pct + '%';
+    document.getElementById('progLabel').textContent = label;
+  }
+
+  function setStatus(text) { document.getElementById('statusText').textContent = text; }
+
+  // ─── RUN PIPELINE ────────────────────────────
+  async function runPipeline() {
+    if (!S.rawData || !S.currentFile) return;
+    S.horizon = parseInt(document.getElementById('horizonSlider').value);
+    S.ci      = parseInt(document.getElementById('ciSlider').value);
+
+    const models = [];
+    models.push('naive'); // 항상 포함
+    if (document.getElementById('m_ets').checked)   models.push('ets');
+    if (document.getElementById('m_arima').checked) models.push('arima');
+    if (document.getElementById('m_stl').checked)   models.push('stl');
+
+    document.getElementById('runBtn').disabled = true;
+    document.getElementById('progressWrap').style.display = 'block';
+    setProgress(5, '데이터 전처리 중...');
+    setStatus('분석 중...');
+
+    const fd = new FormData();
+    fd.append('file', S.currentFile);
+    fd.append('date_col', S.dateCol);
+    fd.append('val_col',  S.valueCol);
+    fd.append('horizon',  S.horizon);
+    fd.append('ci',       S.ci);
+    fd.append('models',   models.join(','));
+
+    const ticker = setInterval(() => {
+      const p = Math.min(parseInt(document.getElementById('progFill').style.width||'5')+7, 85);
+      const labels = ['전처리 완료','ADF 검정 중...','STL 분해 중...','모델 학습 중...','앙상블 계산 중...'];
+      setProgress(p, labels[Math.floor(p/20)]||'분석 중...');
+    }, 600);
+
+    try {
+      const res  = await fetch('/forecast', { method: 'POST', body: fd });
+      const data = await res.json();
+      clearInterval(ticker);
+      if (data.error) { alert('오류: ' + data.error); document.getElementById('runBtn').disabled=false; document.getElementById('progressWrap').style.display='none'; return; }
+      setProgress(100, '완료!');
+      setTimeout(() => { document.getElementById('progressWrap').style.display='none'; }, 800);
+      setStatus('분석 완료 · ' + new Date().toLocaleTimeString());
+      document.getElementById('runBtn').disabled = false;
+      applyResults(data);
+    } catch(e) {
+      clearInterval(ticker);
+      alert('서버 오류: ' + e.message);
+      document.getElementById('runBtn').disabled = false;
+      document.getElementById('progressWrap').style.display = 'none';
+    }
+  }
+
+  // ─── APPLY RESULTS ────────────────────────────
+  function applyResults(data) {
+    S.results = data;
+    S.dates = data.dates; S.values = data.values; S.futureDates = data.futureDates;
+    S._naiveSmape = data.naiveSmape || 0;
+    S._strategy   = data.strategy || '';
+    S._oosSMAPEs  = data.oosSMAPEs || {};
+    S._horizonSmapes = data.horizonSmapes || {};
+    S._diagnostics = data.diagnostics || {};
+
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('kpiStrip').classList.add('visible');
+    document.getElementById('flowBar').classList.add('visible');
+    document.getElementById('tabsBar').classList.add('visible');
+
+    // KPI
+    const ens = data.ensemble;
+    const kv = (id, val, unit='', decimals=2) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = (typeof val === 'number' ? val.toFixed(decimals) : val) + unit;
+    };
+    kv('kMAE',  ens.mae,   '', 1);
+    kv('kRMSE', ens.rmse,  '', 1);
+
+    const smapeEl = document.getElementById('kSMAPE');
+    smapeEl.textContent = ens.smape.toFixed(2) + '%';
+    smapeEl.className = 'kpi-val ' + (ens.smape<10?'green':ens.smape<20?'yellow':'red');
+
+    kv('kMAPE', ens.mape, '%');
+    const maseEl = document.getElementById('kMASE');
+    maseEl.textContent = ens.mase.toFixed(3);
+    maseEl.className = 'kpi-val ' + (ens.mase<1?'green':'red');
+    kv('kR2', ens.r2, '', 3);
+    kv('kRSFE', ens.rsfe, '', 1);
+    const tsEl = document.getElementById('kTS');
+    tsEl.textContent = ens.ts.toFixed(2);
+    tsEl.className = 'kpi-val ' + (Math.abs(ens.ts)<=4?'green':'red');
+
+    renderEDA(data);
+    renderForecast(data);
+    renderModels(data);
+    renderDecomp(data);
+    renderVerdict(data);
+
+    // 첫 탭 활성화
+    switchTab('eda', document.querySelector('.tab'));
+  }
+
+  // ─── TAB SWITCH ────────────────────────────────
+  function switchTab(name, btn) {
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    const sec = document.getElementById('tab-'+name);
+    if (sec) sec.classList.add('active');
+    if (btn) btn.classList.add('active');
+  }
+
+  // ─── CHART HELPERS ────────────────────────────
+  function destroyChart(id) { if(S.charts[id]) { S.charts[id].destroy(); delete S.charts[id]; } }
+
+  function makeChart(id, cfg) {
+    destroyChart(id);
+    S.charts[id] = new Chart(document.getElementById(id), cfg);
+    return S.charts[id];
+  }
+
+  const TICK = {
+    color:'#94a3b8', font:{size:10}, maxTicksLimit:8,
+    callback: v => typeof v === 'number' && Math.abs(v) >= 1000 ? (v/1000).toFixed(1)+'k' : (typeof v==='number'?v.toFixed(1):v)
+  };
+  const GRID = { color:'rgba(0,0,0,.04)' };
+
+  // ─── EDA ──────────────────────────────────────
+  function renderEDA(data) {
+    const diag = data.diagnostics;
+    const prep = data.preprocessInfo || {};
+
+    // 전처리 카드
+    document.getElementById('ppSteps').innerHTML = `
+      <div class="pp-card">
+        <div class="pp-step">Step 1 · 결측치 처리</div>
+        <div class="pp-method">${diag.missingMethod}</div>
+        <div class="pp-why">시계열 연속성 보존. 단발 결측 → 선형보간, 연속 결측 → LOCF 권장. 평균 대체는 시점 분산 왜곡 발생.</div>
+      </div>
+      <div class="pp-card">
+        <div class="pp-step">Step 2 · 이상치 처리</div>
+        <div class="pp-method">${diag.outlierMethod}</div>
+        <div class="pp-why">IQR 2.5σ 기준 클리핑. 극단치(Outlier)는 제거, 특이치(Novelty)는 보존. Hampel Filter 탐지 후 중앙값 대체.</div>
+      </div>
+      <div class="pp-card">
+        <div class="pp-step">Step 3 · 정규화</div>
+        <div class="pp-method">${diag.normMethod}</div>
+        <div class="pp-why">RevIN: 인스턴스별 정규화 후 역변환. 스케일 불변 예측을 가능하게 합니다. 100배 이상 스케일 차이 시 로그 변환 추가.</div>
+      </div>`;
+
+    // 기술통계
+    document.getElementById('descStats').innerHTML = [
+      ['평균', diag.mean?.toFixed(2)], ['중앙값', diag.median?.toFixed(2)],
+      ['표준편차', diag.std?.toFixed(2)], ['최솟값', diag.min?.toFixed(2)],
+      ['최댓값', diag.max?.toFixed(2)], ['왜도', diag.skewness?.toFixed(3)],
+      ['첨도', diag.kurtosis?.toFixed(3)], ['이상치', diag.outlierCount+'개 ('+diag.outlierPct+'%)']
+    ].map(([l,v]) => `<div class="stat-mini"><div class="stat-mini-lbl">${l}</div><div class="stat-mini-val">${v??'—'}</div></div>`).join('');
+
+    // ADF
+    const isS = diag.isStationary;
+    const pv  = diag.adfPvalue != null ? diag.adfPvalue.toFixed(4) : '—';
+    const ljp = diag.ljungBoxP != null ? diag.ljungBoxP.toFixed(4) : '—';
+    document.getElementById('adfResult').innerHTML = `
+      <div class="adf-box ${isS?'stationary':'nonstationary'}">
+        <div class="adf-tag ${isS?'ok':'warn'}">${isS?'✅ ADF 통과':'⚠️ ADF 미통과'}</div>
+        <div class="adf-title">${isS?'정상성 시계열':'비정상성 시계열'}</div>
+        <div class="adf-desc">p-value: <strong>${pv}</strong><br>${isS?'ARIMA 직접 적용 가능':'차분(d=1) 후 ARIMA 적용. 자동 처리됨.'}</div>
+      </div>
+      <div class="adf-box ${ljp!=='—'&&parseFloat(ljp)>0.05?'stationary':'nonstationary'}">
+        <div class="adf-tag ${ljp!=='—'&&parseFloat(ljp)>0.05?'ok':'warn'}">Ljung-Box</div>
+        <div class="adf-title">${ljp!=='—'&&parseFloat(ljp)>0.05?'백색잡음':'자기상관 존재'}</div>
+        <div class="adf-desc">p-value: <strong>${ljp}</strong><br>${ljp!=='—'&&parseFloat(ljp)>0.05?'모델 없이도 예측 불가능한 패턴 없음':'시계열 모델 적용 의미 있음'}</div>
+      </div>`;
+
+    // 원본 시계열 차트
+    makeChart('edaRawChart', {
+      type:'line', data:{
+        labels: S.dates,
+        datasets:[{label:'실제값',data:S.values,borderColor:'#2563eb',borderWidth:1.5,pointRadius:0,fill:false,tension:.3}]
+      },
+      options:{responsive:true,plugins:{legend:{display:false}},
+        scales:{x:{ticks:{...TICK,maxTicksLimit:6},grid:GRID},y:{ticks:TICK,grid:GRID}}}
+    });
+
+    // ACF 차트
+    const rawAcf = data.rawAcf || {};
+    const acfVals = rawAcf.vals || [];
+    const cb = rawAcf.confBound || 0.196;
+    makeChart('edaAcfChart', {
+      type:'bar', data:{
+        labels: acfVals.map((_,i)=>i+1),
+        datasets:[
+          {label:'ACF',data:acfVals,backgroundColor:acfVals.map(v=>Math.abs(v)>cb?'rgba(37,99,235,.7)':'rgba(37,99,235,.25)'),borderWidth:0},
+          {label:'+CI',data:acfVals.map(()=>cb),type:'line',borderColor:'rgba(220,38,38,.5)',borderDash:[4,3],borderWidth:1,pointRadius:0},
+          {label:'-CI',data:acfVals.map(()=>-cb),type:'line',borderColor:'rgba(220,38,38,.5)',borderDash:[4,3],borderWidth:1,pointRadius:0},
+        ]
+      },
+      options:{responsive:true,plugins:{legend:{display:false}},
+        scales:{x:{ticks:{...TICK,maxTicksLimit:15}},y:{ticks:TICK,grid:GRID,min:-1,max:1}}}
+    });
+
+    // 분포 해석
+    const sk = diag.skewness, ku = diag.kurtosis;
+    document.getElementById('distInterpret').innerHTML = `
+      <div class="grid-3" style="margin-bottom:0;">
+        <div class="stat-mini"><div class="stat-mini-lbl">왜도 (Skewness)</div><div class="stat-mini-val">${sk?.toFixed(3)}</div><div style="font-size:11px;color:var(--text-soft);margin-top:4px;">${Math.abs(sk)<0.5?'거의 대칭 분포':sk>0?'우편향 (양수 꼬리)':'좌편향 (음수 꼬리)'}</div></div>
+        <div class="stat-mini"><div class="stat-mini-lbl">첨도 (Kurtosis)</div><div class="stat-mini-val">${ku?.toFixed(3)}</div><div style="font-size:11px;color:var(--text-soft);margin-top:4px;">${Math.abs(ku)<0.5?'정규분포와 유사':ku>0?'뾰족한 분포 (이상치 다수 가능)':'평평한 분포'}</div></div>
+        <div class="stat-mini"><div class="stat-mini-lbl">변동계수 (CV)</div><div class="stat-mini-val">${diag.std&&diag.mean?(diag.std/Math.abs(diag.mean)*100).toFixed(1)+'%':'—'}</div><div style="font-size:11px;color:var(--text-soft);margin-top:4px;">${diag.std&&diag.mean&&diag.std/Math.abs(diag.mean)<0.3?'낮은 변동성':'높은 변동성 — 예측 난이도 상승'}</div></div>
+      </div>`;
+  }
+
+  // ─── FORECAST ─────────────────────────────────
+  function renderForecast(data) {
+    const ens = data.ensemble;
+    const n   = S.values.length;
+    const showN = Math.min(n, 120);
+    const dSlice = S.dates.slice(-showN);
+    const vSlice = S.values.slice(-showN);
+    const fSlice = (ens.fitted||[]).slice(-showN);
+
+    makeChart('forecastChart', {
+      type:'line',
+      data:{
+        labels: [...dSlice, ...S.futureDates],
+        datasets:[
+          {label:'실제값',data:[...vSlice,...S.futureDates.map(()=>null)],borderColor:'#1e40af',borderWidth:1.5,pointRadius:0,tension:.3},
+          {label:'피팅값',data:[...fSlice,...S.futureDates.map(()=>null)],borderColor:'#00e5a0',borderWidth:1.5,borderDash:[4,3],pointRadius:0,tension:.3},
+          {label:'예측값',data:[...dSlice.map(()=>null),...ens.pred],borderColor:'#f97316',borderWidth:2,pointRadius:2,tension:.3},
+          {label:'상한',data:[...dSlice.map(()=>null),...ens.upper],borderColor:'rgba(249,115,22,.2)',backgroundColor:'rgba(249,115,22,.08)',borderWidth:1,pointRadius:0,fill:'+1'},
+          {label:'하한',data:[...dSlice.map(()=>null),...ens.lower],borderColor:'rgba(249,115,22,.2)',borderWidth:1,pointRadius:0,fill:false},
+        ]
+      },
+      options:{responsive:true,plugins:{legend:{display:true,labels:{boxWidth:12,font:{size:11}}}},
+        scales:{x:{ticks:{...TICK,maxTicksLimit:10},grid:GRID},y:{ticks:TICK,grid:GRID}}}
+    });
+
+    // 예측 수치 테이블
+    if (S.futureDates.length > 0) {
+      const wrap = document.getElementById('forecastTableWrap');
+      wrap.style.display = 'block';
+      const rows = S.futureDates.slice(0,20).map((d,i) => `
+        <tr>
+          <td>${d}</td>
+          <td>${ens.pred[i]?.toFixed(2)??'—'}</td>
+          <td>${ens.lower[i]?.toFixed(2)??'—'}</td>
+          <td>${ens.upper[i]?.toFixed(2)??'—'}</td>
+        </tr>`).join('');
+      document.getElementById('forecastTableContent').innerHTML = `
+        <table class="fc-table">
+          <thead><tr><th>날짜</th><th>예측값</th><th>하한</th><th>상한</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+  }
+
+  // ─── MODELS ───────────────────────────────────
+  function renderModels(data) {
+    const models = data.modelResults || [];
+    const naive  = models.find(m=>m.name==='Naive');
+    const naiveSmape = naive?.smape ?? S._naiveSmape;
+
+    // 리더보드
+    const bestSmape = Math.min(...models.filter(m=>m.name!=='Naive').map(m=>m.smape));
+    const rows = models.map(m => {
+      const isNaive = m.name === 'Naive';
+      const isBest  = !isNaive && m.smape === bestSmape;
+      const smapePct = Math.min((m.smape / (naiveSmape||20)) * 100, 200);
+      const maseOk = m.mase < 1;
+      const tsOk   = Math.abs(m.ts) <= 4;
+      const extra  = m.order ? `<br><small style="color:var(--text-muted);font-family:'DM Mono',monospace;">(${m.order.join(',')}) AIC:${m.aic??'—'}</small>` : '';
+      return `<tr>
+        <td><span class="model-dot" style="background:${m.color}"></span>${m.name}${extra}
+          ${isBest?'<span class="best-badge">BEST</span>':''}
+          ${isNaive?'<span class="naive-badge">기준선</span>':''}
+        </td>
+        <td>${m.mae.toFixed(2)}</td>
+        <td>${m.rmse.toFixed(2)}</td>
+        <td>
+          <div class="smape-bar-wrap">
+            <div class="smape-bar-bg"><div class="smape-bar-fill" style="width:${smapePct}%;background:${m.color}"></div></div>
+            <span>${m.smape.toFixed(2)}%</span>
+          </div>
+        </td>
+        <td class="${maseOk?'mase-ok':'mase-bad'}">${m.mase.toFixed(3)}</td>
+        <td class="${tsOk?'ts-ok':'ts-bad'}">${m.ts.toFixed(2)}</td>
+        <td style="font-size:12px;color:var(--text-soft);">${(m.trainTime||0).toFixed(1)}s</td>
+      </tr>`;
+    }).join('');
+    document.getElementById('leaderboardTable').innerHTML = `
+      <thead><tr><th>모델</th><th>MAE</th><th>RMSE</th><th>SMAPE</th><th>MASE</th><th>TS</th><th>시간</th></tr></thead>
+      <tbody>${rows}</tbody>`;
+
+    // SMAPE 바 차트 (Naive 기준선 포함)
+    makeChart('smapeChart', {
+      type:'bar',
+      data:{
+        labels: models.map(m=>m.name),
+        datasets:[{
+          label:'SMAPE (%)',
+          data: models.map(m=>m.smape),
+          backgroundColor: models.map(m=>m.color+'cc'),
+          borderRadius: 6,
+        }]
+      },
+      options:{
+        responsive:true,
+        plugins:{
+          legend:{display:false},
+          annotation:{
+            annotations:{
+              naiveLine:{type:'line',yMin:naiveSmape,yMax:naiveSmape,borderColor:'#dc2626',borderDash:[6,3],borderWidth:1.5,
+                label:{content:'Naive 기준',enabled:true,position:'end',font:{size:10}}}
+            }
+          }
+        },
+        scales:{x:{ticks:TICK,grid:{display:false}},y:{ticks:TICK,grid:GRID}}
+      }
+    });
+
+    // OOS 가중치 차트
+    const nonNaive = models.filter(m=>m.name!=='Naive');
+    const oosList  = nonNaive.map(m=>S._oosSMAPEs[m.name]||0);
+    const total    = oosList.reduce((a,b)=>a+(1/Math.max(b,1)),0)||1;
+    const weights  = oosList.map(v=>(1/Math.max(v,1))/total*100);
+    makeChart('weightChart', {
+      type:'bar',
+      data:{
+        labels: nonNaive.map(m=>m.name),
+        datasets:[{label:'가중치(%)',data:weights,backgroundColor:nonNaive.map(m=>m.color+'cc'),borderRadius:6}]
+      },
+      options:{responsive:true,plugins:{legend:{display:false}},
+        scales:{x:{ticks:TICK,grid:{display:false}},y:{ticks:TICK,grid:GRID,max:100}}}
+    });
+  }
+
+  // ─── DECOMP ───────────────────────────────────
+  function renderDecomp(data) {
+    const stl = data.stl;
+    const ens = data.ensemble;
+
+    const mkLine = (id, vals, label, color) => makeChart(id, {
+      type:'line', data:{labels:S.dates,datasets:[{label,data:vals,borderColor:color,borderWidth:1.5,pointRadius:0,fill:false,tension:.3}]},
+      options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{...TICK,maxTicksLimit:6},grid:GRID},y:{ticks:TICK,grid:GRID}}}
+    });
+
+    mkLine('trendChart',   stl.trend,    '트렌드', '#2563eb');
+    mkLine('seasonChart',  stl.seasonal, '계절성', '#00e5a0');
+
+    const residuals = ens.residuals || [];
+    mkLine('residTimeChart', residuals, '잔차', '#f97316');
+
+    // ACF 차트
+    const acf = data.acf;
+    const acfVals = acf.vals||[];
+    const cb = acf.confBound||0.196;
+    makeChart('acfChart', {
+      type:'bar', data:{
+        labels: acfVals.map((_,i)=>i+1),
+        datasets:[
+          {data:acfVals,backgroundColor:acfVals.map(v=>Math.abs(v)>cb?'rgba(220,38,38,.7)':'rgba(37,99,235,.25)'),borderWidth:0},
+          {data:acfVals.map(()=>cb),type:'line',borderColor:'rgba(220,38,38,.5)',borderDash:[4,3],borderWidth:1,pointRadius:0},
+          {data:acfVals.map(()=>-cb),type:'line',borderColor:'rgba(220,38,38,.5)',borderDash:[4,3],borderWidth:1,pointRadius:0},
+        ]
+      },
+      options:{responsive:true,plugins:{legend:{display:false}},
+        scales:{x:{ticks:TICK},y:{ticks:TICK,grid:GRID,min:-1,max:1}}}
+    });
+
+    // 잔차 히스토그램
+    const bins = 20;
+    const mn = Math.min(...residuals), mx = Math.max(...residuals);
+    const w = (mx-mn)/bins;
+    const counts = new Array(bins).fill(0);
+    residuals.forEach(v => { const i = Math.min(Math.floor((v-mn)/w), bins-1); counts[i]++; });
+    const labels = counts.map((_,i) => (mn+i*w).toFixed(1));
+    makeChart('residHistChart', {
+      type:'bar', data:{labels,datasets:[{label:'빈도',data:counts,backgroundColor:'rgba(124,58,237,.5)',borderRadius:3}]},
+      options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:TICK},y:{ticks:TICK,grid:GRID}}}
+    });
+
+    // 잔차 통계
+    const mean  = residuals.reduce((a,b)=>a+b,0)/(residuals.length||1);
+    const std   = Math.sqrt(residuals.reduce((a,b)=>a+(b-mean)**2,0)/(residuals.length||1));
+    document.getElementById('residStats').innerHTML = [
+      ['평균 잔차', mean.toFixed(4), mean>-1&&mean<1?'ok':'warn'],
+      ['잔차 표준편차', std.toFixed(4), ''],
+      ['Ljung-Box Q', (acf.ljungBoxQ||0).toFixed(2), acf.whiteNoise?'ok':'warn'],
+      ['백색잡음', acf.whiteNoise?'통과 ✅':'미통과 ❌', acf.whiteNoise?'ok':'warn'],
+      ['유의한 ACF', `${acf.nSignificant}/${acfVals.length}`, acf.nSignificant<=3?'ok':'warn'],
+    ].map(([l,v,cls]) => `<div class="stat-mini"><div class="stat-mini-lbl">${l}</div><div class="stat-mini-val ${cls?'diag-val '+cls:''}">${v}</div></div>`).join('');
+  }
+
+  // ─── VERDICT ──────────────────────────────────
+  function renderVerdict(data) {
+    const verdict = data.verdict || {};
+    const checks  = verdict.checks || {};
+    const msgs    = verdict.messages || [];
+    const passed  = verdict.passed || 0;
+    const vt      = verdict.verdict || 'review';
+    const vl      = verdict.label   || '재검토 필요';
+
+    const icons = { trust:'🟢', conditional:'🟡', review:'🔴' };
+    document.getElementById('verdictBanner').innerHTML = `
+      <div class="verdict-banner ${vt}">
+        <div class="verdict-icon">${icons[vt]||'❓'}</div>
+        <div>
+          <div class="verdict-label ${vt}">${vl}</div>
+          <div class="verdict-sub">${passed}개 / 4개 기준 통과 · 앙상블 예측 종합 판단</div>
+        </div>
+      </div>`;
+
+    const ens = data.ensemble;
+    const acf = data.acf;
+    const checkDefs = [
+      { key:'mase_ok',    icon:'📐', name:'MASE < 1 (기준선 우위)', detail:`MASE ${ens.mase?.toFixed(3)} — ${checks.mase_ok?'Naive보다 우수. 이 모델은 의미 있습니다.':'Naive보다 나쁨. 모델 변경 또는 시평 단축 필요.'}` },
+      { key:'ts_ok',      icon:'📊', name:'|TS| ≤ 4 (편향 없음)',   detail:`TS ${ens.ts?.toFixed(2)} — ${checks.ts_ok?'편향 없음. 예측이 균형적입니다.':(ens.ts>4?'과소 예측 편향 지속.':'과대 예측 편향 지속.')} RSFE: ${ens.rsfe?.toFixed(1)}` },
+      { key:'residual_ok',icon:'🔬', name:'잔차 백색잡음',           detail:`Ljung-Box Q ${(acf?.ljungBoxQ||0).toFixed(2)} — ${checks.residual_ok?'잔차에 패턴 없음. 모델이 데이터를 완전히 설명.':'잔차에 자기상관 남아있음. 모델이 패턴을 일부 놓침.'}` },
+      { key:'smape_ok',   icon:'🎯', name:'SMAPE < 20% (허용 오차)', detail:`SMAPE ${ens.smape?.toFixed(2)}% — ${checks.smape_ok?'허용 오차(20%) 이내. 예측 정확도 양호.':'허용 오차 초과. 데이터 특성 재검토 필요.'}` },
+    ];
+    document.getElementById('checksGrid').innerHTML = checkDefs.map(c => `
+      <div class="check-card ${checks[c.key]?'pass':'fail'}">
+        <div class="check-icon">${checks[c.key]?'✅':'❌'}</div>
+        <div><div class="check-name">${c.icon} ${c.name}</div><div class="check-detail">${c.detail}</div></div>
+      </div>`).join('');
+
+    // 메시지
+    document.getElementById('verdictMsgs').innerHTML = msgs.map(m => {
+      const cls = m.includes('통과')||m.includes('신뢰')?'ok':m.includes('필요')||m.includes('편향')||m.includes('초과')?'err':'warn';
+      return `<div class="verdict-msg ${cls}">${m}</div>`;
+    }).join('');
+
+    // 시평별 SMAPE 차트
+    const hs = S._horizonSmapes;
+    const hKeys = Object.keys(hs).filter(k=>hs[k]!=null).sort((a,b)=>+a-+b);
+    makeChart('horizonChart', {
+      type:'line',
+      data:{
+        labels: hKeys.map(k=>k+'일'),
+        datasets:[{
+          label:'SMAPE (%)',
+          data: hKeys.map(k=>hs[k]),
+          borderColor:'#2563eb', backgroundColor:'rgba(37,99,235,.08)',
+          borderWidth:2, pointRadius:5, pointBackgroundColor:'#2563eb', fill:true, tension:.3
+        }]
+      },
+      options:{responsive:true,plugins:{legend:{display:false}},
+        scales:{x:{ticks:TICK},y:{ticks:TICK,grid:GRID,beginAtZero:true,title:{display:true,text:'SMAPE (%)',color:'#94a3b8',font:{size:11}}}}}
+    });
+
+    // STL 강도 차트
+    const stl = data.stl;
+    makeChart('stlStrengthChart', {
+      type:'bar',
+      data:{
+        labels:['트렌드 강도','계절성 강도'],
+        datasets:[{
+          data:[stl.trendStrength, stl.seasonStrength],
+          backgroundColor:['rgba(37,99,235,.7)','rgba(0,229,160,.7)'],
+          borderRadius:8
+        }]
+      },
+      options:{responsive:true,plugins:{legend:{display:false}},
+        scales:{x:{ticks:TICK},y:{ticks:TICK,grid:GRID,min:0,max:1}}}
+    });
+
+    // 백테스트 요약
+    const bt = data.backtest || [];
+    const avgSmape = bt.length ? (bt.reduce((a,b)=>a+b.smape,0)/bt.length).toFixed(2) : '—';
+    const minSmape = bt.length ? Math.min(...bt.map(b=>b.smape)).toFixed(2) : '—';
+    const maxSmape = bt.length ? Math.max(...bt.map(b=>b.smape)).toFixed(2) : '—';
+    const ens_smape = data.ensemble.smape;
+    const overfit = bt.length && ens_smape ? (parseFloat(avgSmape)/ens_smape).toFixed(1)+'x' : '—';
+    document.getElementById('btSummary').innerHTML = `
+      <div class="grid-2" style="margin-bottom:0;gap:8px;">
+        <div class="stat-mini"><div class="stat-mini-lbl">평균 SMAPE</div><div class="stat-mini-val">${avgSmape}%</div></div>
+        <div class="stat-mini"><div class="stat-mini-lbl">과적합 비율</div><div class="stat-mini-val ${parseFloat(overfit)>3?'diag-val err':''}">${overfit}</div></div>
+        <div class="stat-mini"><div class="stat-mini-lbl">최소 SMAPE</div><div class="stat-mini-val">${minSmape}%</div></div>
+        <div class="stat-mini"><div class="stat-mini-lbl">최대 SMAPE</div><div class="stat-mini-val">${maxSmape}%</div></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-soft);margin-top:8px;">백테스트 &gt; in-sample × 3배 → 과적합 의심</div>`;
+
+    // 백테스트 차트
+    const colors = ['#2563eb','#16a34a','#d97706'];
+    const btDatasets = bt.map((w,i)=>{
+      const dates = S.dates.slice(w.train_end, w.train_end + w.actual.length);
+      return { label:`윈도우 ${w.window} (${data.backtest[i]?.cutoffDate||''})`,
+        data: dates.map((_,j)=>({x:dates[j],y:w.pred[j]})),
+        borderColor:colors[i], borderWidth:1.5, pointRadius:2, fill:false, tension:.3 };
+    });
+    makeChart('backtestChart', {
+      type:'line',
+      data:{
+        labels: S.dates,
+        datasets:[
+          {label:'실제값',data:S.values,borderColor:'#1e40af',borderWidth:1,pointRadius:0,fill:false,tension:.3},
+          ...btDatasets
+        ]
+      },
+      options:{responsive:true,plugins:{legend:{labels:{boxWidth:10,font:{size:11}}}},
+        scales:{x:{ticks:{...TICK,maxTicksLimit:8},grid:GRID},y:{ticks:TICK,grid:GRID}}}
+    });
+  }
+
+  // ─── NEWS ─────────────────────────────────────
+  async function loadNews() {
+    const kw  = document.getElementById('newsKeyword').value || '시계열 예측';
+    const btn = document.querySelector('#tab-news button');
+    btn.textContent = '검색 중...'; btn.disabled = true;
+    try {
+      const res  = await fetch(`/news?keyword=${encodeURIComponent(kw)}`);
+      const data = await res.json();
+      if (data.error) { document.getElementById('newsResult').innerHTML = `<div style="color:var(--red);padding:16px;">${data.error}</div>`; return; }
+      const articles = data.articles || [];
+      if (!articles.length) { document.getElementById('newsResult').innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-soft);">결과가 없습니다.</div>'; return; }
+      document.getElementById('newsResult').innerHTML = `<div class="news-grid">${
+        articles.map(a=>`
+          <a href="${a.url}" target="_blank" style="text-decoration:none;">
+            <div class="news-card">
+              <div class="news-src">${a.source} · ${a.publishedAt}</div>
+              <div class="news-title">${a.title}</div>
+              <div class="news-desc">${(a.description||'').slice(0,120)}${a.description?.length>120?'…':''}</div>
+            </div>
+          </a>`).join('')
+      }</div>`;
+    } catch(e) {
+      document.getElementById('newsResult').innerHTML = `<div style="color:var(--red);padding:16px;">오류: ${e.message}</div>`;
+    } finally {
+      btn.textContent = '🔍 검색'; btn.disabled = false;
+    }
+  }
+
+  // ─── INSIGHT ──────────────────────────────────
+  async function loadInsight() {
+    if (!S.results) return;
+    const d   = S.results;
+    const ens = d.ensemble;
+    const stl = d.stl;
+    const diag = S._diagnostics;
+    const insightEl = document.getElementById('insightText');
+    insightEl.innerHTML = '<div style="color:var(--text-soft);font-size:13px;">AI 분석 중...</div>';
+    try {
+      const res = await fetch('/insight', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          smape: ens.smape, mase: ens.mase, ts: ens.ts, r2: ens.r2,
+          trendStrength: stl.trendStrength, seasonStrength: stl.seasonStrength,
+          period: stl.period, freq: d.freq, horizon: S.horizon,
+          n: diag?.n, dateStart: diag?.dateStart, dateEnd: diag?.dateEnd,
+          valCol: S.valueCol, naiveSmape: S._naiveSmape,
+          predValues: ens.pred, biasStatus: ens.bias_status,
+          strategy: S._strategy, verdict: d.verdict||{}
+        })
+      });
+      const result = await res.json();
+      if (result.error) { insightEl.innerHTML = `<div style="color:var(--red);">${result.error}</div>`; return; }
+      const text = (result.insight||'').replace(/## /g,'</p><h2>').replace(/\n/g,'<br>');
+      insightEl.innerHTML = `<div class="insight-text"><p>${text}</p></div>`;
+    } catch(e) {
+      insightEl.innerHTML = `<div style="color:var(--red);">${e.message}</div>`;
+    }
+  }
+
+  // ─── DEMO DATA ────────────────────────────────
+  async function loadDemo() {
+    // 2년치 일별 수요 데이터 (트렌드+계절성+노이즈)
+    const rows = [['ds','y']];
+    let base = 1400;
+    for (let i=0; i<730; i++) {
+      const d = new Date('2022-01-01');
+      d.setDate(d.getDate()+i);
+      const ds = d.toISOString().slice(0,10);
+      const trend = -i*0.3;
+      const season = Math.sin(i/365*2*Math.PI)*120 + Math.sin(i/7*2*Math.PI)*40;
+      const noise  = (Math.random()-.5)*60;
+      const y = Math.max(800, base+trend+season+noise);
+      rows.push([ds, y.toFixed(2)]);
+    }
+    const csv = rows.map(r=>r.join(',')).join('\n');
+    const file = new File([csv], 'demo_data.csv', {type:'text/csv'});
+    S.currentFile = file;
+    processFile(file);
+    setTimeout(() => {
+      document.getElementById('runBtn').disabled = false;
+      runPipeline();
+    }, 500);
+  }
+</script>
+</body>
+</html>
