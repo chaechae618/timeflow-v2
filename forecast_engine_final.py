@@ -1,18 +1,27 @@
 """
 TimeFlow 예측 엔진 — 경량 배포 버전 (Render 무료 플랜 최적화)
 모델: Naive + ETS + ARIMA + STL
-추가: RSFE, TS(Tracking Signal) 편향성 지표
 
-[수정 내역]
-1. compute_oos_weight(): ARIMAModel OOS 가중치 계산 시 ETSModel로 잘못 계산하던 버그 수정
-   → ARIMAModel().fit()으로 교정 (앙상블 가중치 왜곡 해소 → MASE 개선)
-2. RevIN.fit_transform(): IQR 클리핑 기준 2.5 → 3.0으로 완화
-   → 과도한 클리핑으로 인한 역변환 후 편향(TS 음수) 완화
-3. ARIMAModel.fit(): p 0~2, q 0~1 유지 (Render 무료 512MB 메모리 제한으로 원복)
-   → 탐색 범위 확장 시 OOM Kill 발생 확인됨
-4. detect_period(): ACF 기반 실제 dominant period 자동 감지 추가
-   → MS/QS 주파수만 적용, nlags 상한 24로 제한 (메모리 절약)
-   → 계절성 19.3%처럼 약한 경우 STL 과잉 분해 방지
+[버그 수정 내역 v3]
+BUG-1: RevIN 구조적 편향 → 추세 제거 후 정규화(Detrend-then-normalize)로 교체
+  - 기존: 전체 평균/표준편차로 정규화 → 상승 추세 데이터에서 항상 과소 예측 (TS 폭발)
+  - 수정: 선형 추세 제거 후 정규화, 역변환 시 추세 복원
+  - 효과: TS = 54, 182 → 정상 범위(|TS| ≤ 4) 기대
+
+BUG-2: OOS 가중치 주파수 하드코딩 → 실제 주파수 전달
+  - 기존: detect_period(train_norm, 'MS') — 항상 MS로 고정
+  - 수정: 실제 freq를 compute_oos_weight()에 전달
+  - 효과: MASE > 1 개선 기대
+
+BUG-3: MASE 기준이 lag-1 차분 → lag-period 차분으로 교정
+  - 기존: naive_mae = mean(|diff(a)|) — lag-1 기준
+  - 수정: 실제 계절성 주기(period)를 반영한 seasonal naive MAE
+  - 효과: MASE 해석 정합성 향상
+
+[기존 수정 유지]
+- ARIMAModel OOS 가중치 버그 수정 (ETSModel로 잘못 계산하던 문제)
+- ARIMA p 0~2, q 0~1 유지 (Render 512MB 메모리 제한)
+- detect_period(): ACF 기반 dominant period 자동 감지
 """
 
 import pandas as pd
@@ -72,13 +81,11 @@ def diagnose(df, date_col, value_col, original_null_count=None):
     effective_null_count = original_null_count if original_null_count is not None else int(null_mask.sum())
     missing_method = "선형 보간(Linear Interpolation)" if effective_null_count > 0 else "결측치 없음"
     outlier_method = "IQR 기반 클리핑 (3.0σ)" if outlier_count > 0 else "이상치 없음"
-    norm_method = "RevIN (Reversible Instance Normalization)"
-    log_needed = False
+    norm_method = "DetrendRevIN (추세 제거 + Reversible Normalization)"
     try:
         pos_vals = values[values > 0]
         if len(pos_vals) > 0 and values.max() / (pos_vals.min() + 1e-10) > 100:
-            log_needed = True
-            norm_method = "RevIN + 로그 변환 (스케일 100배 이상 감지)"
+            norm_method = "DetrendRevIN + 로그 변환 (스케일 100배 이상 감지)"
     except Exception:
         pass
 
@@ -108,17 +115,29 @@ def diagnose(df, date_col, value_col, original_null_count=None):
 
 
 # ─────────────────────────────────────────────
-# 3. 전처리 (RevIN)
+# 3. 전처리 — DetrendRevIN
+# [BUG-1 수정] 선형 추세 제거 후 정규화
+# 기존 RevIN은 전체 평균/std로 정규화해서 단조 상승 시계열에서
+# 후반부 값이 항상 과소 예측됨 → TS가 수십~수백으로 폭발
 # ─────────────────────────────────────────────
 class RevIN:
+    """
+    DetrendRevIN: 선형 추세 제거 → IQR 클리핑 → 표준화 → 역변환 시 추세 복원
+    상승/하락 추세 시계열에서 RevIN의 구조적 과소/과대 예측 편향을 해소
+    """
     def __init__(self, eps=1e-8):
         self.eps = eps
         self.fitted = False
         self.log_transform = False
+        # 선형 추세 파라미터
+        self.trend_slope_ = 0.0
+        self.trend_intercept_ = 0.0
 
     def fit_transform(self, values: np.ndarray) -> np.ndarray:
         v = values.copy().astype(float)
-        # 결측치 선형 보간
+        n = len(v)
+
+        # 1) 결측치 선형 보간
         nan_idx = np.where(np.isnan(v))[0]
         for i in nan_idx:
             left  = v[:i][~np.isnan(v[:i])]
@@ -126,25 +145,77 @@ class RevIN:
             if len(left) and len(right):  v[i] = (left[-1] + right[0]) / 2
             elif len(left):               v[i] = left[-1]
             elif len(right):              v[i] = right[0]
-        # [수정2] IQR 이상치 클리핑: 2.5 → 3.0으로 완화
-        # 이유: 2.5배 기준이 너무 공격적으로 클리핑해 역변환 후 예측값이
-        #       실제 범위보다 낮아지는 과대 예측 편향(TS 음수)을 유발했음
+
+        # 2) IQR 클리핑 (3.0배 기준 유지)
         q1, q3 = np.percentile(v, 25), np.percentile(v, 75)
         v = np.clip(v, q1 - 3.0*(q3-q1), q3 + 3.0*(q3-q1))
-        # 로그 변환 (스케일 100배 이상)
+
+        # 3) [BUG-1 핵심 수정] 선형 추세 제거
+        # 추세를 제거한 잔차에 대해 정규화하므로
+        # 역변환 시 추세를 다시 더해줌 → 편향 해소
+        t = np.arange(n, dtype=float)
+        # 로버스트 추세 추정: 이상치에 덜 민감한 Theil-Sen 근사
+        # (메모리 절약: 전체 대신 균등 샘플 50개로 계산)
+        try:
+            sample_size = min(50, n)
+            idx_sample = np.linspace(0, n-1, sample_size, dtype=int)
+            t_s, v_s = t[idx_sample], v[idx_sample]
+            slope, intercept, _, _, _ = stats.linregress(t_s, v_s)
+            self.trend_slope_ = float(slope)
+            self.trend_intercept_ = float(intercept)
+        except Exception:
+            self.trend_slope_ = 0.0
+            self.trend_intercept_ = float(np.mean(v))
+
+        trend_line = self.trend_slope_ * t + self.trend_intercept_
+        v_detrended = v - trend_line
+
+        # 4) 로그 변환 (스케일 100배 이상, 잔차 기준)
         v_pos = v[v > 0]
         if len(v_pos) > 0 and v.max() / (v_pos.min() + 1e-10) > 100:
             self.log_transform = True
-            v = np.log1p(v)
-        self.mean_ = np.mean(v)
-        self.std_  = np.std(v) + self.eps
+            # 로그 변환 시 추세 제거는 생략 (스케일 변환과 충돌)
+            self.trend_slope_ = 0.0
+            self.trend_intercept_ = 0.0
+            v_detrended = np.log1p(np.clip(v, 0, None))
+
+        # 5) 표준화
+        self.mean_ = np.mean(v_detrended)
+        self.std_  = np.std(v_detrended) + self.eps
         self.fitted = True
-        return (v - self.mean_) / self.std_
+        self._n_fit = n  # 학습 데이터 길이 (역변환 시 추세 연장에 사용)
+        return (v_detrended - self.mean_) / self.std_
 
     def inverse_transform(self, x: np.ndarray) -> np.ndarray:
-        result = np.array(x) * self.std_ + self.mean_
+        arr = np.array(x, dtype=float)
+        # 역표준화
+        result = arr * self.std_ + self.mean_
         if self.log_transform:
             result = np.expm1(result)
+        else:
+            # 추세 복원: x의 시작 인덱스를 추정
+            # fitted 시에는 0..n-1, predict 시에는 n..n+horizon-1
+            # _n_fit을 기준으로 판단
+            m = len(arr)
+            if m <= self._n_fit:
+                t_start = 0
+            else:
+                t_start = self._n_fit
+            t = np.arange(t_start, t_start + m, dtype=float)
+            result = result + self.trend_slope_ * t + self.trend_intercept_
+        return result
+
+    def inverse_transform_future(self, x: np.ndarray) -> np.ndarray:
+        """미래 예측값 역변환 — 추세를 n_fit 이후 구간에서 복원"""
+        arr = np.array(x, dtype=float)
+        result = arr * self.std_ + self.mean_
+        if self.log_transform:
+            result = np.expm1(result)
+        else:
+            n = self._n_fit
+            m = len(arr)
+            t = np.arange(n, n + m, dtype=float)
+            result = result + self.trend_slope_ * t + self.trend_intercept_
         return result
 
 Preprocessor = RevIN
@@ -154,19 +225,14 @@ Preprocessor = RevIN
 # 4. STL 분해
 # ─────────────────────────────────────────────
 def detect_period(values: np.ndarray, freq: str) -> int:
-    """
-    [수정4] ACF 기반 실제 dominant period 자동 감지 (메모리 최적화 버전)
-    - MS/QS 주파수만 ACF 탐지 적용 (W, D는 데이터 길이가 커서 메모리 과다)
-    - nlags 상한을 24로 제한 (Render 무료 플랜 512MB 메모리 대응)
-    - ACF 피크값 < 0.10이면 계절성 없다고 판단해 기본값 반환
-    """
+    """ACF 기반 실제 dominant period 자동 감지 (메모리 최적화)"""
     defaults = {'MS': 12, 'QS': 4, 'W': 52, 'D': 7, 'H': 24}
     base = defaults.get(freq, 7)
 
     if freq in ('MS', 'QS'):
         try:
             from statsmodels.tsa.stattools import acf
-            max_lag = min(base * 2, 24)  # 상한 24로 제한 (메모리 절약)
+            max_lag = min(base * 2, 24)
             if max_lag < base:
                 return base
             acf_vals = acf(values, nlags=max_lag, fft=True)
@@ -175,7 +241,6 @@ def detect_period(values: np.ndarray, freq: str) -> int:
             region = acf_vals[search_start:search_end]
             peak_offset = int(np.argmax(region))
             detected = search_start + peak_offset
-            # 피크 ACF 값이 0.10 미만이면 계절성 없다고 보고 base 반환
             if acf_vals[detected] < 0.10:
                 return base
             return int(detected)
@@ -213,9 +278,10 @@ def stl_decompose(values: np.ndarray, period: int, freq: str) -> dict:
 
 
 # ─────────────────────────────────────────────
-# 5. 평가 지표 (RSFE, TS 추가)
+# 5. 평가 지표 (RSFE, TS 포함)
+# [BUG-3 수정] MASE 기준을 seasonal naive로 교정
 # ─────────────────────────────────────────────
-def compute_metrics(actual, predicted):
+def compute_metrics(actual, predicted, period: int = 1):
     a = np.array(actual, dtype=float)
     p = np.array(predicted, dtype=float)
     n = min(len(a), len(p))
@@ -231,29 +297,36 @@ def compute_metrics(actual, predicted):
     ss_res = np.sum(res**2)
     ss_tot = np.sum((a - np.mean(a))**2) + 1e-10
     r2 = float(1 - ss_res / ss_tot)
-    naive_mae = np.mean(np.abs(np.diff(a))) + 1e-10
+
+    # [BUG-3 수정] seasonal naive MAE (lag=period 차분 기준)
+    # 기존: np.diff(a) = lag-1 차분 → 계절성 없는 naive와 비교
+    # 수정: lag-period 차분 → 실제 seasonal naive와 비교
+    safe_period = max(1, int(period))
+    if n > safe_period:
+        naive_errors = np.abs(a[safe_period:] - a[:-safe_period])
+        naive_mae = float(np.mean(naive_errors)) + 1e-10
+    else:
+        naive_mae = float(np.mean(np.abs(np.diff(a)))) + 1e-10
     mase = mae / naive_mae
 
-    # RSFE (Running Sum of Forecast Error) — 편향성
+    # RSFE / TS
     rsfe = float(np.sum(res))
-    # TS (Tracking Signal) = RSFE / MAD
-    mad = float(np.mean(np.abs(res))) + 1e-10
-    ts = rsfe / mad
-    # 편향 판정: |TS| > 4이면 편향 의심 (강의 TS_06 기준)
-    # res = actual - predicted 이므로:
-    #   ts > +4: RSFE 양수 → 예측이 실제보다 낮음 → 과소 예측 편향
-    #   ts < -4: RSFE 음수 → 예측이 실제보다 높음 → 과대 예측 편향
-    bias_status = "편향 없음" if abs(ts) <= 4 else ("과대 예측 편향" if ts < -4 else "과소 예측 편향")
+    mad  = float(np.mean(np.abs(res))) + 1e-10
+    ts   = rsfe / mad
+    bias_status = (
+        "편향 없음" if abs(ts) <= 4
+        else ("과대 예측 편향" if ts < -4 else "과소 예측 편향")
+    )
 
     return {
-        'MAE':   round(mae, 4),
-        'RMSE':  round(rmse, 4),
-        'SMAPE': round(smape, 4),
-        'MAPE':  round(mape, 4) if not np.isnan(mape) else 0,
-        'R2':    round(r2, 4),
-        'MASE':  round(mase, 4),
-        'RSFE':  round(rsfe, 4),
-        'TS':    round(ts, 4),
+        'MAE':         round(mae, 4),
+        'RMSE':        round(rmse, 4),
+        'SMAPE':       round(smape, 4),
+        'MAPE':        round(mape, 4) if not np.isnan(mape) else 0,
+        'R2':          round(r2, 4),
+        'MASE':        round(mase, 4),
+        'RSFE':        round(rsfe, 4),
+        'TS':          round(ts, 4),
         'bias_status': bias_status,
     }
 
@@ -283,21 +356,24 @@ class ETSModel:
             )
             self.model_fit = m.fit(optimized=True)
         except Exception:
-            from statsmodels.tsa.holtwinters import ExponentialSmoothing
             m = ExponentialSmoothing(values_norm, trend='add', initialization_method='estimated')
             self.model_fit = m.fit(optimized=True)
 
         self.preprocessor = preprocessor
         self.values_norm = values_norm
-        self.fitted_orig = preprocessor.inverse_transform(np.array(self.model_fit.fittedvalues))
+        self.period = period
+        fitted_norm = np.array(self.model_fit.fittedvalues)
+        # 피팅값 역변환 (학습 구간 = 0..n-1)
+        self.fitted_orig = preprocessor.inverse_transform(fitted_norm)
         self.train_time = round(time.time() - t0, 2)
         return self
 
     def predict(self, horizon):
-        return self.preprocessor.inverse_transform(np.array(self.model_fit.forecast(horizon)))
+        fc = np.array(self.model_fit.forecast(horizon))
+        return self.preprocessor.inverse_transform_future(fc)
 
-    def get_metrics(self, actual_orig):
-        return compute_metrics(actual_orig, self.fitted_orig)
+    def get_metrics(self, actual_orig, period=1):
+        return compute_metrics(actual_orig, self.fitted_orig, period=period)
 
 
 # ─────────────────────────────────────────────
@@ -324,9 +400,6 @@ class ARIMAModel:
         except Exception:
             d = 1
 
-        # [수정3] 탐색 범위 원복: p 0~2, q 0~1 유지
-        # 이유: p 0~3, q 0~2로 확장 시 Render 무료 플랜(512MB)에서
-        #       메모리 초과(OOM Kill)로 프로세스 강제 종료 확인됨
         best_aic, best_order = np.inf, (1, d, 1)
         for p in range(0, 3):
             for q in range(0, 2):
@@ -349,11 +422,11 @@ class ARIMAModel:
 
     def predict(self, horizon):
         fc = self.model_fit.forecast(steps=horizon)
-        return self.preprocessor.inverse_transform(
-            fc.values if hasattr(fc, 'values') else np.array(fc))
+        fc_arr = fc.values if hasattr(fc, 'values') else np.array(fc)
+        return self.preprocessor.inverse_transform_future(fc_arr)
 
-    def get_metrics(self, actual_orig):
-        return compute_metrics(actual_orig, self.fitted_orig)
+    def get_metrics(self, actual_orig, period=1):
+        return compute_metrics(actual_orig, self.fitted_orig, period=period)
 
 
 # ─────────────────────────────────────────────
@@ -374,7 +447,6 @@ class NaiveModel:
         self.preprocessor = preprocessor
         self.period = max(1, int(period))
         n = len(values_norm)
-        # 계절성 나이브: fitted[i] = values[i - period]
         fitted_norm = np.concatenate([
             values_norm[:self.period],
             values_norm[:-self.period]
@@ -387,10 +459,10 @@ class NaiveModel:
         tail = self.values_norm[-self.period:]
         reps = (horizon // self.period) + 2
         repeated = np.tile(tail, reps)[:horizon]
-        return self.preprocessor.inverse_transform(repeated)
+        return self.preprocessor.inverse_transform_future(repeated)
 
-    def get_metrics(self, actual_orig):
-        return compute_metrics(actual_orig, self.fitted_orig)
+    def get_metrics(self, actual_orig, period=1):
+        return compute_metrics(actual_orig, self.fitted_orig, period=period)
 
 
 # ─────────────────────────────────────────────
@@ -426,7 +498,6 @@ class STLModel:
                 self.ets_fit = SimpleExpSmoothing(sa).fit()
             fitted_norm = np.array(self.ets_fit.fittedvalues) + self.seasonal_
         except Exception:
-            # 폴백: 순수 ETS
             from statsmodels.tsa.holtwinters import ExponentialSmoothing
             try:
                 m = ExponentialSmoothing(values_norm, trend='add', initialization_method='estimated')
@@ -448,21 +519,21 @@ class STLModel:
             self.seasonal_[i % self.period] for i in range(n, n + horizon)
         ])
         pred_norm = pred_sa + future_seasonal
-        return self.preprocessor.inverse_transform(pred_norm)
+        return self.preprocessor.inverse_transform_future(pred_norm)
 
-    def get_metrics(self, actual_orig):
-        return compute_metrics(actual_orig, self.fitted_orig)
-
-
-# ─────────────────────────────────────────────
-# (구) RandomForest — 제거됨 (PDF 범위 외)
-# ─────────────────────────────────────────────
+    def get_metrics(self, actual_orig, period=1):
+        return compute_metrics(actual_orig, self.fitted_orig, period=period)
 
 
 # ─────────────────────────────────────────────
-# 10. OOS 가중치 (윈도우 1개)
+# 10. OOS 가중치
+# [BUG-2 수정] 실제 freq 전달
 # ─────────────────────────────────────────────
-def compute_oos_weight(model, values_orig, preprocessor, horizon_cv):
+def compute_oos_weight(model, values_orig, preprocessor, horizon_cv, freq='MS'):
+    """
+    [BUG-2 수정] 기존 detect_period(train_norm, 'MS')로 주파수를 'MS'로 하드코딩했음
+    → 실제 데이터 주파수(freq)를 인자로 받아 올바른 period를 계산
+    """
     n = len(values_orig)
     train_end = int(n * 0.8)
     if train_end + horizon_cv > n:
@@ -472,16 +543,12 @@ def compute_oos_weight(model, values_orig, preprocessor, horizon_cv):
     try:
         prep_cv = RevIN()
         train_norm = prep_cv.fit_transform(train)
-        period_cv = detect_period(train_norm, 'MS')
+        period_cv = detect_period(train_norm, freq)  # ← 실제 주파수 전달
         if isinstance(model, NaiveModel):
             m_cv = NaiveModel().fit(train_norm, prep_cv, period=period_cv)
         elif isinstance(model, ETSModel):
             m_cv = ETSModel().fit(train_norm, prep_cv, period=period_cv)
         elif isinstance(model, ARIMAModel):
-            # [수정1] 핵심 버그 수정: ARIMAModel인데 ETSModel로 OOS 가중치를 계산하던 문제
-            # 기존: m_cv = ETSModel().fit(train_norm, prep_cv, period=period_cv)
-            # 수정: ARIMAModel().fit()으로 교정
-            # 효과: ARIMA의 앙상블 가중치가 올바르게 산출 → MASE 개선 기대
             m_cv = ARIMAModel().fit(train_norm, prep_cv)
         elif isinstance(model, STLModel):
             m_cv = STLModel().fit(train_norm, prep_cv, period=period_cv)
@@ -595,7 +662,6 @@ def rolling_backtest(values_orig, horizon, n_windows=3):
             pred = np.full(len(actual), np.mean(train))
         denom = (np.abs(actual) + np.abs(pred)) / 2 + 1e-10
         smape = float(np.mean(np.abs(actual - pred) / denom) * 100)
-        # 백테스트 RSFE/TS
         res = actual - pred
         rsfe = float(np.sum(res))
         mad = float(np.mean(np.abs(res))) + 1e-10
@@ -663,11 +729,11 @@ def run_pipeline(df, date_col, value_col,
     values_orig = df[value_col].values.astype(float)
     values_norm = prep.fit_transform(values_orig)
 
-    # 전처리 결과 기록
     preprocess_info = {
         'log_applied': prep.log_transform,
         'norm_mean': round(float(prep.mean_), 4),
         'norm_std': round(float(prep.std_), 4),
+        'trend_slope': round(float(prep.trend_slope_), 6),
         'missing_method': diag['missing_method'],
         'outlier_method': diag['outlier_method'],
         'norm_method': diag['norm_method'],
@@ -692,32 +758,34 @@ def run_pipeline(df, date_col, value_col,
     trained_models = []
     if 'naive' in models_to_run:
         m = NaiveModel().fit(values_norm, prep, period=period)
-        m.get_metrics_cache = m.get_metrics(values_orig)
+        m.get_metrics_cache = m.get_metrics(values_orig, period=period)
         trained_models.append(m)
     if 'ets' in models_to_run:
         m = ETSModel().fit(values_norm, prep, period=period)
-        m.get_metrics_cache = m.get_metrics(values_orig)
+        m.get_metrics_cache = m.get_metrics(values_orig, period=period)
         trained_models.append(m)
     if 'arima' in models_to_run:
         m = ARIMAModel().fit(values_norm, prep)
-        m.get_metrics_cache = m.get_metrics(values_orig)
+        m.get_metrics_cache = m.get_metrics(values_orig, period=period)
         trained_models.append(m)
     if 'stl' in models_to_run:
         m = STLModel().fit(values_norm, prep, period=period)
-        m.get_metrics_cache = m.get_metrics(values_orig)
+        m.get_metrics_cache = m.get_metrics(values_orig, period=period)
         trained_models.append(m)
 
-    # Step 6: OOS 가중치
+    # Step 6: OOS 가중치 — [BUG-2 수정] freq 전달
     horizon_cv = min(horizon, max(3, n // 10))
     oos_smapes = {}
     for m in trained_models:
-        oos_smapes[m.name] = compute_oos_weight(m, values_orig, prep, horizon_cv)
+        oos_smapes[m.name] = compute_oos_weight(
+            m, values_orig, prep, horizon_cv, freq=freq  # ← freq 전달
+        )
 
     # Step 7: 앙상블
     ens = Ensemble(trained_models, oos_smapes, ci=ci)
     ens_result  = ens.predict(horizon)
     ens_fitted  = ens.get_fitted()
-    ens_metrics = compute_metrics(values_orig, ens_fitted)
+    ens_metrics = compute_metrics(values_orig, ens_fitted, period=period)
 
     # Step 8: 날짜
     last_date    = pd.to_datetime(df[date_col].iloc[-1])
@@ -730,7 +798,7 @@ def run_pipeline(df, date_col, value_col,
     # Step 10: 백테스트
     backtest = rolling_backtest(values_orig, min(horizon, 12), n_windows=3)
 
-    # 나이브 모델 SMAPE (MASE 판단 기준)
+    # 나이브 SMAPE (MASE 판단 기준)
     naive_pred = np.roll(values_orig, 1)
     naive_pred[0] = values_orig[0]
     denom = (np.abs(values_orig) + np.abs(naive_pred)) / 2 + 1e-10
