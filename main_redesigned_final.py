@@ -1,6 +1,5 @@
 """
-TimeFlow — FastAPI 백엔드 (과제 완전판)
-모델: Naive + ETS + ARIMA + STL
+TimeFlow — FastAPI 백엔드 (전면 보완 버전)
 """
 
 from fastapi import FastAPI, UploadFile, File, Form
@@ -17,7 +16,8 @@ try:
 except ImportError:
     ENGINE_OK = False
 
-NEWS_API_KEY      = os.environ.get("NEWS_API_KEY", "")
+# ── 환경변수에서 API 키 읽기 ──────────────────────────────
+NEWS_API_KEY     = os.environ.get("NEWS_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 app = FastAPI(title="TimeFlow API")
@@ -38,12 +38,12 @@ async def forecast(
     file:     UploadFile = File(...),
     date_col: str        = Form(...),
     val_col:  str        = Form(...),
-    horizon:  int        = Form(30),
+    horizon:  int        = Form(12),
     ci:       int        = Form(90),
     models:   str        = Form("naive,ets,arima,stl"),
 ):
     if not ENGINE_OK:
-        return JSONResponse({"error": "forecast_engine_final.py를 같은 폴더에 두세요."}, status_code=500)
+        return JSONResponse({"error": "forecast_engine_real.py를 같은 폴더에 두세요."}, status_code=500)
 
     try:
         content = await file.read()
@@ -53,7 +53,9 @@ async def forecast(
         df["y"]  = pd.to_numeric(df["y"], errors="coerce")
         df = df[["ds", "y"]].reset_index(drop=True)
 
+        # ── 원본 결측치 수를 dropna() 전에 기록 ──────────────
         original_null_count = int(df["y"].isna().sum())
+
         df = df.dropna().reset_index(drop=True)
 
         if len(df) < 20:
@@ -63,33 +65,24 @@ async def forecast(
         if not model_list:
             model_list = ["naive", "ets", "arima", "stl"]
 
-        result = run_pipeline(df, "ds", "y", horizon=horizon, ci=ci/100,
-                              models_to_run=model_list,
+        result = run_pipeline(df, "ds", "y", horizon=horizon, ci=ci/100, models_to_run=model_list,
                               original_null_count=original_null_count)
 
         values_orig = df["y"].values.tolist()
         dates_orig  = [str(d)[:10] for d in df["ds"]]
 
         model_colors = {
-            "Naive": "#94a3b8",
-            "ETS": "#00e5a0",
-            "STL": "#a78bfa",
+            "Naive":  "#94a3b8",
+            "ETS":    "#00e5a0",
+            "ARIMA":  "#00d4ff",
+            "STL":    "#a855f7",
         }
 
         model_results = []
         for m in result["models"]:
             mc = m.get_metrics_cache or {}
-            name = m.name
-            # ARIMA 이름에서 색상 키 추출
-            color = model_colors.get(name, "#00d4ff" if "ARIMA" in name else "#8a9bb8")
-            extra = {}
-            if hasattr(m, 'aic') and m.aic is not None:
-                extra['aic'] = m.aic
-                extra['bic'] = getattr(m, 'bic', None)
-            if hasattr(m, 'order'):
-                extra['order'] = list(m.order)
             model_results.append({
-                "name":      name,
+                "name":      m.name,
                 "smape":     round(float(mc.get("SMAPE", 0)), 4),
                 "mae":       round(float(mc.get("MAE",   0)), 4),
                 "rmse":      round(float(mc.get("RMSE",  0)), 4),
@@ -99,10 +92,9 @@ async def forecast(
                 "rsfe":      round(float(mc.get("RSFE",  0)), 4),
                 "ts":        round(float(mc.get("TS",    0)), 4),
                 "bias_status": mc.get("bias_status", "편향 없음"),
-                "color":     color,
+                "color":     next((v for k, v in model_colors.items() if m.name.startswith(k)), "#8a9bb8"),
                 "fitted":    _safe_list(getattr(m, "fitted_orig", [])),
                 "trainTime": getattr(m, "train_time", 0) or 0,
-                **extra,
             })
 
         ens_metrics   = result["ensemble_metrics"]
@@ -110,8 +102,7 @@ async def forecast(
         ens_pred      = _safe_list(result["ensemble"]["pred"])
         ens_lower     = _safe_list(result["ensemble"]["lower"])
         ens_upper     = _safe_list(result["ensemble"]["upper"])
-        ens_residuals = [float(v - f) if f is not None else 0
-                         for v, f in zip(values_orig, ens_fitted)]
+        ens_residuals = [float(v - f) for v, f in zip(values_orig, ens_fitted)]
 
         stl = result["stl"]
         acf_result = result.get("acf_result", {})
@@ -119,8 +110,6 @@ async def forecast(
         oos_smapes = {k: round(float(v), 4) for k, v in result.get("oos_smapes", {}).items()}
         diag       = result["diagnostics"]
         preprocess = result.get("preprocess_info", {})
-        horizon_smapes = result.get("horizon_smapes", {})
-        verdict    = result.get("verdict", {})
 
         backtest_windows = []
         for w in result["backtest"]:
@@ -184,11 +173,10 @@ async def forecast(
             },
 
             "oosSMAPEs": oos_smapes,
-            "horizonSmapes": horizon_smapes,
 
             "diagnostics": {
                 "n":            diag.get("n", 0),
-                "nullCount":    original_null_count,
+                "nullCount":    original_null_count,          # ← 원본 결측치 수 (dropna 전)
                 "outlierCount": diag.get("outlier_count", 0),
                 "outlierPct":   diag.get("outlier_pct", 0),
                 "freq":         diag.get("freq", "unknown"),
@@ -202,7 +190,6 @@ async def forecast(
                 "isStationary": bool(diag.get("is_stationary")) if diag.get("is_stationary") is not None else None,
                 "adfPvalue":    float(diag.get("adf_pvalue")) if diag.get("adf_pvalue") is not None else None,
                 "adfStat":      float(diag.get("adf_stat")) if diag.get("adf_stat") is not None else None,
-                "ljungBoxP":    float(diag.get("ljung_box_p")) if diag.get("ljung_box_p") is not None else None,
                 "dateStart":    diag.get("date_start", ""),
                 "dateEnd":      diag.get("date_end", ""),
                 "missingMethod":  diag.get("missing_method", ""),
@@ -216,17 +203,7 @@ async def forecast(
                 "normStd":    preprocess.get("norm_std", 0),
             },
 
-            "verdict": {
-                "verdict":   verdict.get("verdict", ""),
-                "label":     verdict.get("label", ""),
-                "passed":    verdict.get("passed", 0),
-                "total":     verdict.get("total", 4),
-                "checks":    verdict.get("checks", {}),
-                "messages":  verdict.get("messages", []),
-            },
-
             "naiveSmape": result.get("naive_smape", 0),
-            "naiveMae":   result.get("naive_mae", 0),
             "freq":       result["freq"],
             "strategy":   result["strategy"]["label"],
         }
@@ -251,28 +228,43 @@ def _safe_list(arr):
         return []
 
 
+# ── 뉴스 API ──────────────────────────────────────────────
 @app.get("/news")
 async def get_news(keyword: str = "시계열 예측", lang: str = "ko"):
     if not NEWS_API_KEY:
         return JSONResponse({"error": "NEWS_API_KEY가 설정되지 않았습니다."}, status_code=400)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
+            # 한국어 뉴스 우선, 없으면 영어로 fallback
             resp = await client.get(
                 "https://newsapi.org/v2/everything",
-                params={"q": keyword, "language": lang, "sortBy": "publishedAt",
-                        "pageSize": 6, "apiKey": NEWS_API_KEY}
+                params={
+                    "q":        keyword,
+                    "language": lang,
+                    "sortBy":   "publishedAt",
+                    "pageSize": 6,
+                    "apiKey":   NEWS_API_KEY,
+                }
             )
             data = resp.json()
+
         articles = data.get("articles", [])
         if not articles and lang == "ko":
+            # 한국어 결과 없으면 영어로 재시도
             async with httpx.AsyncClient(timeout=10) as client:
                 resp2 = await client.get(
                     "https://newsapi.org/v2/everything",
-                    params={"q": keyword, "language": "en", "sortBy": "publishedAt",
-                            "pageSize": 6, "apiKey": NEWS_API_KEY}
+                    params={
+                        "q":        keyword,
+                        "language": "en",
+                        "sortBy":   "publishedAt",
+                        "pageSize": 6,
+                        "apiKey":   NEWS_API_KEY,
+                    }
                 )
                 data = resp2.json()
                 articles = data.get("articles", [])
+
         result = []
         for a in articles:
             if not a.get("title") or a["title"] == "[Removed]":
@@ -285,16 +277,20 @@ async def get_news(keyword: str = "시계열 예측", lang: str = "ko"):
                 "publishedAt": a.get("publishedAt", "")[:10],
                 "urlToImage":  a.get("urlToImage", ""),
             })
+
         return {"ok": True, "articles": result[:6]}
+
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── AI 인사이트 (Claude API) ───────────────────────────────
 @app.post("/insight")
 async def get_insight(payload: dict):
     if not ANTHROPIC_API_KEY:
         return JSONResponse({"error": "ANTHROPIC_API_KEY가 설정되지 않았습니다."}, status_code=400)
     try:
+        # 예측 결과 요약 추출
         smape      = payload.get("smape", 0)
         mase       = payload.get("mase", 0)
         ts         = payload.get("ts", 0)
@@ -311,8 +307,7 @@ async def get_insight(payload: dict):
         naive_smape = payload.get("naiveSmape", 0)
         pred_values = payload.get("predValues", [])
         bias_status = payload.get("biasStatus", "편향 없음")
-        strategy    = payload.get("strategy", "")
-        verdict     = payload.get("verdict", {})
+        strategy   = payload.get("strategy", "")
 
         freq_label = {"MS":"월별","D":"일별","W":"주별","H":"시간별","QS":"분기별"}.get(freq, freq)
         mase_vs = "나이브 모델 대비 우수" if mase < 1 else "나이브 모델보다 낮음"
@@ -323,9 +318,6 @@ async def get_insight(payload: dict):
             delta = pred_values[-1] - pred_values[0]
             pct   = (delta / (abs(pred_values[0]) + 1e-10)) * 100
             pred_trend = f"예측 기간 동안 {'+' if delta > 0 else ''}{pct:.1f}% {'상승' if delta > 0 else '하락'} 전망"
-
-        verdict_label = verdict.get("label", "")
-        verdict_msgs  = "\n".join(verdict.get("messages", []))
 
         prompt = f"""당신은 시계열 데이터 분석 전문가입니다.
 아래 시계열 예측 결과를 분석하여 실무진이 바로 활용할 수 있는 인사이트를 한국어로 작성해주세요.
@@ -345,10 +337,6 @@ async def get_insight(payload: dict):
 - 트렌드 강도: {trend_str:.2f} ({'강한 추세' if trend_str > 0.5 else '약한 추세'})
 - 계절성 강도: {season_str:.2f} ({'뚜렷한 계절성' if season_str > 0.5 else '약한 계절성'})
 - 감지된 주기: {period}개({freq_label})
-
-[최종 판단]
-- 판정: {verdict_label}
-- 세부 사항: {verdict_msgs}
 
 [미래 예측]
 - 예측 기간: {horizon}{freq_label}
@@ -386,6 +374,7 @@ async def get_insight(payload: dict):
                 }
             )
             result = resp.json()
+            print("Anthropic API 응답:", result)  # 이 줄 추가
 
         text = result.get("content", [{}])[0].get("text", "인사이트 생성에 실패했습니다.")
         return {"ok": True, "insight": text}
