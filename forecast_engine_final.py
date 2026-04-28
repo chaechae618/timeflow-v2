@@ -2,6 +2,16 @@
 TimeFlow 예측 엔진 — 경량 배포 버전 (Render 무료 플랜 최적화)
 모델: Naive + ETS + ARIMA + STL
 추가: RSFE, TS(Tracking Signal) 편향성 지표
+
+[수정 내역]
+1. compute_oos_weight(): ARIMAModel OOS 가중치 계산 시 ETSModel로 잘못 계산하던 버그 수정
+   → ARIMAModel().fit()으로 교정 (앙상블 가중치 왜곡 해소 → MASE 개선)
+2. RevIN.fit_transform(): IQR 클리핑 기준 2.5 → 3.0으로 완화
+   → 과도한 클리핑으로 인한 역변환 후 편향(TS 음수) 완화
+3. ARIMAModel.fit(): p 탐색 범위 0~2 → 0~3, q 0~1 → 0~2로 확장
+   → 잔차 자기상관(Ljung-Box Q 과다) 개선
+4. detect_period(): ACF 기반 실제 dominant period 자동 감지 추가
+   → 계절성 19.3%처럼 약한 경우 STL 과잉 분해 방지
 """
 
 import pandas as pd
@@ -46,9 +56,9 @@ def diagnose(df, date_col, value_col, original_null_count=None):
         clean = values[~null_mask]
         if len(clean) >= 20:
             res = adfuller(clean, autolag='AIC')
-            adf_stat = round(float(res[0]), 4)       # float() 추가
-            adf_pvalue = round(float(res[1]), 4)     # float() 추가
-            is_stationary = bool(res[1] < 0.05)     # bool() 추가
+            adf_stat = round(float(res[0]), 4)
+            adf_pvalue = round(float(res[1]), 4)
+            is_stationary = bool(res[1] < 0.05)
     except Exception:
         pass
 
@@ -58,10 +68,9 @@ def diagnose(df, date_col, value_col, original_null_count=None):
     kurtosis = round(float(stats.kurtosis(clean_vals)), 4) if len(clean_vals) > 3 else 0
 
     # 전처리 방법 결정
-    # original_null_count가 전달된 경우 그것을 우선 사용 (dropna 전 원본 기준)
     effective_null_count = original_null_count if original_null_count is not None else int(null_mask.sum())
     missing_method = "선형 보간(Linear Interpolation)" if effective_null_count > 0 else "결측치 없음"
-    outlier_method = "IQR 기반 클리핑 (2.5σ)" if outlier_count > 0 else "이상치 없음"
+    outlier_method = "IQR 기반 클리핑 (3.0σ)" if outlier_count > 0 else "이상치 없음"  # [수정4] 2.5σ → 3.0σ 표기 반영
     norm_method = "RevIN (Reversible Instance Normalization)"
     log_needed = False
     try:
@@ -116,9 +125,11 @@ class RevIN:
             if len(left) and len(right):  v[i] = (left[-1] + right[0]) / 2
             elif len(left):               v[i] = left[-1]
             elif len(right):              v[i] = right[0]
-        # IQR 이상치 클리핑
+        # [수정2] IQR 이상치 클리핑: 2.5 → 3.0으로 완화
+        # 이유: 2.5배 기준이 너무 공격적으로 클리핑해 역변환 후 예측값이
+        #       실제 범위보다 낮아지는 과대 예측 편향(TS 음수)을 유발했음
         q1, q3 = np.percentile(v, 25), np.percentile(v, 75)
-        v = np.clip(v, q1 - 2.5*(q3-q1), q3 + 2.5*(q3-q1))
+        v = np.clip(v, q1 - 3.0*(q3-q1), q3 + 3.0*(q3-q1))
         # 로그 변환 (스케일 100배 이상)
         v_pos = v[v > 0]
         if len(v_pos) > 0 and v.max() / (v_pos.min() + 1e-10) > 100:
@@ -142,8 +153,36 @@ Preprocessor = RevIN
 # 4. STL 분해
 # ─────────────────────────────────────────────
 def detect_period(values: np.ndarray, freq: str) -> int:
+    """
+    [수정4] ACF 기반 실제 dominant period 자동 감지
+    - 기존: 주파수만 보고 고정값 반환 (MS → 항상 12)
+    - 수정: ACF에서 실제 피크를 탐지해 계절성이 약한 경우 적응적으로 period 결정
+    - 효과: 계절성 강도 19.3%처럼 약할 때 STL이 12개월 패턴을 강제 분해하던 문제 해소
+    """
     defaults = {'MS': 12, 'QS': 4, 'W': 52, 'D': 7, 'H': 24}
-    return defaults.get(freq, 7)
+    base = defaults.get(freq, 7)
+
+    if freq in ('MS', 'QS', 'W', 'D'):
+        try:
+            from statsmodels.tsa.stattools import acf
+            max_lag = min(base * 3, len(values) // 2 - 1)
+            if max_lag < base:
+                return base
+            acf_vals = acf(values, nlags=max_lag, fft=True)
+            # lag=1은 제외하고 base/2 이후 구간에서 피크 탐지
+            search_start = max(2, base // 2)
+            search_end   = min(max_lag, base * 2) + 1
+            region = acf_vals[search_start:search_end]
+            peak_offset = int(np.argmax(region))
+            detected = search_start + peak_offset
+            # 피크 ACF 값이 0.1 미만이면 계절성이 없다고 보고 base 반환
+            if acf_vals[detected] < 0.10:
+                return base
+            return int(detected)
+        except Exception:
+            pass
+
+    return base
 
 
 def stl_decompose(values: np.ndarray, period: int, freq: str) -> dict:
@@ -201,6 +240,9 @@ def compute_metrics(actual, predicted):
     mad = float(np.mean(np.abs(res))) + 1e-10
     ts = rsfe / mad
     # 편향 판정: |TS| > 4이면 편향 의심 (강의 TS_06 기준)
+    # res = actual - predicted 이므로:
+    #   ts > +4: RSFE 양수 → 예측이 실제보다 낮음 → 과소 예측 편향
+    #   ts < -4: RSFE 음수 → 예측이 실제보다 높음 → 과대 예측 편향
     bias_status = "편향 없음" if abs(ts) <= 4 else ("과대 예측 편향" if ts < -4 else "과소 예측 편향")
 
     return {
@@ -282,10 +324,12 @@ class ARIMAModel:
         except Exception:
             d = 1
 
-        # 경량화: p 0~2, q 0~1
+        # [수정3] 탐색 범위 확장: p 0~3, q 0~2
+        # 이유: 기존 p 0~2, q 0~1 범위가 너무 좁아 잔차 자기상관(Ljung-Box Q=179)을
+        #       잡지 못했음. 범위 확장으로 더 적합한 차수 탐색 가능
         best_aic, best_order = np.inf, (1, d, 1)
-        for p in range(0, 3):
-            for q in range(0, 2):
+        for p in range(0, 4):
+            for q in range(0, 3):
                 try:
                     fit = ARIMA(values_norm, order=(p, d, q)).fit()
                     if fit.aic < best_aic:
@@ -434,7 +478,11 @@ def compute_oos_weight(model, values_orig, preprocessor, horizon_cv):
         elif isinstance(model, ETSModel):
             m_cv = ETSModel().fit(train_norm, prep_cv, period=period_cv)
         elif isinstance(model, ARIMAModel):
-            m_cv = ETSModel().fit(train_norm, prep_cv, period=period_cv)
+            # [수정1] 핵심 버그 수정: ARIMAModel인데 ETSModel로 OOS 가중치를 계산하던 문제
+            # 기존: m_cv = ETSModel().fit(train_norm, prep_cv, period=period_cv)
+            # 수정: ARIMAModel().fit()으로 교정
+            # 효과: ARIMA의 앙상블 가중치가 올바르게 산출 → MASE 1.065 개선 기대
+            m_cv = ARIMAModel().fit(train_norm, prep_cv)
         elif isinstance(model, STLModel):
             m_cv = STLModel().fit(train_norm, prep_cv, period=period_cv)
         else:
@@ -447,7 +495,7 @@ def compute_oos_weight(model, values_orig, preprocessor, horizon_cv):
 
 
 # ─────────────────────────────────────────────
-# 10. 앙상블
+# 11. 앙상블
 # ─────────────────────────────────────────────
 class Ensemble:
     def __init__(self, models, oos_smapes, ci=0.90):
@@ -486,7 +534,7 @@ class Ensemble:
 
 
 # ─────────────────────────────────────────────
-# 11. ACF 진단
+# 12. ACF 진단
 # ─────────────────────────────────────────────
 def compute_acf(residuals, max_lag=20):
     n = len(residuals)
@@ -508,7 +556,7 @@ def compute_acf(residuals, max_lag=20):
 
 
 # ─────────────────────────────────────────────
-# 12. 원본 데이터 ACF (EDA용)
+# 13. 원본 데이터 ACF (EDA용)
 # ─────────────────────────────────────────────
 def compute_raw_acf(values: np.ndarray, max_lag=30) -> dict:
     n = len(values)
@@ -526,7 +574,7 @@ def compute_raw_acf(values: np.ndarray, max_lag=30) -> dict:
 
 
 # ─────────────────────────────────────────────
-# 13. 롤링 백테스트 (윈도우 3개)
+# 14. 롤링 백테스트 (윈도우 3개)
 # ─────────────────────────────────────────────
 def rolling_backtest(values_orig, horizon, n_windows=3):
     n = len(values_orig)
@@ -565,7 +613,7 @@ def rolling_backtest(values_orig, horizon, n_windows=3):
 
 
 # ─────────────────────────────────────────────
-# 14. 날짜 생성
+# 15. 날짜 생성
 # ─────────────────────────────────────────────
 def generate_future_dates(last_date, freq, horizon):
     freq_map = {'H': 'h', 'D': 'D', 'W': 'W', 'MS': 'MS', 'QS': 'QS'}
@@ -577,7 +625,7 @@ def generate_future_dates(last_date, freq, horizon):
 
 
 # ─────────────────────────────────────────────
-# 15. 메인 파이프라인
+# 16. 메인 파이프라인
 # ─────────────────────────────────────────────
 def run_pipeline(df, date_col, value_col,
                  horizon=12, ci=0.90, models_to_run=None,
