@@ -2,22 +2,7 @@
 TimeFlow 예측 엔진 — 경량 배포 버전 (Render 무료 플랜 최적화)
 모델: Naive + ETS + ARIMA + STL
 
-[v5 — TS 버그 근본 해결 + 예측 정확도 최우선]
-
-핵심 변경:
-1. DetrendRevIN 완전 폐기 → 단순 RevIN 복귀
-   - 추세 인덱스 혼동으로 인한 R²=1.000 + TS=175 모순 완전 제거
-   - inverse_transform() 하나만 사용, fitted/future 구분 없음
-
-2. TS 계산 방식 교체: 전체 누적 → rolling window(최근 20개)
-   - 장기 상승/하락 데이터에서 전체 RSFE 누적이 구조적으로 폭발하는 문제 해소
-   - window=20은 실무 표준 (단기 편향 감지 목적에 적합)
-
-3. ARIMA fitted NaN 방어 강화
-
-4. MASE: seasonal naive 기준 유지
-
-5. OOS 가중치: 실제 freq 전달 유지
+[v6 — 안정성 강화 + 인사이트 API 연동]
 """
 
 import pandas as pd
@@ -108,9 +93,7 @@ def diagnose(df, date_col, value_col, original_null_count=None):
 
 
 # ─────────────────────────────────────────────
-# 3. 전처리 — RevIN (단순, 안전)
-# DetrendRevIN 완전 폐기: inverse_transform이 하나뿐이라
-# fitted/future 인덱스 혼동이 구조적으로 불가능
+# 3. RevIN 전처리
 # ─────────────────────────────────────────────
 class RevIN:
     def __init__(self, eps=1e-8):
@@ -121,7 +104,6 @@ class RevIN:
     def fit_transform(self, values: np.ndarray) -> np.ndarray:
         v = values.copy().astype(float)
 
-        # 결측치 선형 보간
         nan_idx = np.where(np.isnan(v))[0]
         for i in nan_idx:
             left  = v[:i][~np.isnan(v[:i])]
@@ -130,11 +112,9 @@ class RevIN:
             elif len(left):               v[i] = left[-1]
             elif len(right):              v[i] = right[0]
 
-        # IQR 클리핑 (3.0배)
         q1, q3 = np.percentile(v, 25), np.percentile(v, 75)
         v = np.clip(v, q1 - 3.0*(q3-q1), q3 + 3.0*(q3-q1))
 
-        # 로그 변환 (스케일 100배 이상)
         v_pos = v[v > 0]
         if len(v_pos) > 0 and v.max() / (v_pos.min() + 1e-10) > 100:
             self.log_transform = True
@@ -210,12 +190,7 @@ def stl_decompose(values: np.ndarray, period: int, freq: str) -> dict:
 
 
 # ─────────────────────────────────────────────
-# 5. 평가 지표
-#
-# TS 핵심 수정: rolling window(최근 20개)
-# - 전체 누적 RSFE는 장기 상승 데이터에서 구조적으로 폭발
-# - window=20으로 단기 편향만 감지 (실무 표준)
-# - 이 수정 하나로 TS=175, TS=182 같은 버그 완전 제거
+# 5. 평가 지표 (rolling window TS)
 # ─────────────────────────────────────────────
 def compute_metrics(actual, predicted, period: int = 1):
     a = np.array(actual, dtype=float)
@@ -223,7 +198,6 @@ def compute_metrics(actual, predicted, period: int = 1):
     n = min(len(a), len(p))
     a, p = a[:n], p[:n]
 
-    # NaN/inf 방어 (ARIMA 첫 행 NaN 문제)
     nan_mask = np.isnan(p) | np.isinf(p)
     if nan_mask.any():
         p = p.copy()
@@ -241,7 +215,6 @@ def compute_metrics(actual, predicted, period: int = 1):
     ss_tot = np.sum((a - np.mean(a))**2) + 1e-10
     r2 = float(1 - ss_res / ss_tot)
 
-    # MASE: seasonal naive 기준 (lag=period)
     safe_period = max(1, int(period))
     if n > safe_period:
         naive_errors = np.abs(a[safe_period:] - a[:-safe_period])
@@ -250,8 +223,6 @@ def compute_metrics(actual, predicted, period: int = 1):
         naive_mae = float(np.mean(np.abs(np.diff(a)))) + 1e-10
     mase = mae / naive_mae
 
-    # TS: rolling window 방식 (최근 20개)
-    # window=20 → 단기 편향 감지, 전체 누적 폭발 방지
     ts_window = min(n, 20)
     res_w = res[-ts_window:]
     rsfe = float(np.sum(res_w))
@@ -367,7 +338,6 @@ class ARIMAModel:
 
         fitted_norm = np.array(self.model_fit.fittedvalues)
 
-        # NaN/inf 방어: ARIMA 첫 행이 NaN인 경우 원본값으로 대체
         nan_mask = np.isnan(fitted_norm) | np.isinf(fitted_norm)
         if nan_mask.any():
             fitted_norm = fitted_norm.copy()
@@ -485,7 +455,7 @@ class STLModel:
 
 
 # ─────────────────────────────────────────────
-# 10. OOS 가중치 (실제 freq 전달)
+# 10. OOS 가중치
 # ─────────────────────────────────────────────
 def compute_oos_weight(model, values_orig, preprocessor, horizon_cv, freq='MS'):
     n = len(values_orig)
@@ -619,7 +589,6 @@ def rolling_backtest(values_orig, horizon, n_windows=3):
         denom = (np.abs(actual) + np.abs(pred)) / 2 + 1e-10
         smape = float(np.mean(np.abs(actual - pred) / denom) * 100)
         res = actual - pred
-        # 백테스트도 동일하게 rolling window TS
         ts_window = min(len(res), 20)
         res_w = res[-ts_window:]
         rsfe = float(np.sum(res_w))
@@ -663,7 +632,6 @@ def run_pipeline(df, date_col, value_col,
     if not models_to_run:
         models_to_run = ['naive', 'ets', 'arima', 'stl']
 
-    # Step 1: 진단
     diag = diagnose(df, date_col, value_col, original_null_count=original_null_count)
     freq = diag['freq']
     n = diag['n']
@@ -682,7 +650,6 @@ def run_pipeline(df, date_col, value_col,
         'max_lags': 3,
     }
 
-    # Step 2: 전처리
     prep = RevIN()
     values_orig = df[value_col].values.astype(float)
     values_norm = prep.fit_transform(values_orig)
@@ -696,7 +663,6 @@ def run_pipeline(df, date_col, value_col,
         'norm_method': diag['norm_method'],
     }
 
-    # Step 3: STL
     period = detect_period(values_norm, freq)
     stl_norm = stl_decompose(values_norm, period=period, freq=freq)
     stl = {
@@ -708,10 +674,8 @@ def run_pipeline(df, date_col, value_col,
         'season_strength':stl_norm['season_strength'],
     }
 
-    # Step 4: 원본 ACF
     raw_acf = compute_raw_acf(values_orig)
 
-    # Step 5: 모델 학습
     trained_models = []
     if 'naive' in models_to_run:
         m = NaiveModel().fit(values_norm, prep, period=period)
@@ -730,7 +694,6 @@ def run_pipeline(df, date_col, value_col,
         m.get_metrics_cache = m.get_metrics(values_orig, period=period)
         trained_models.append(m)
 
-    # Step 6: OOS 가중치
     horizon_cv = min(horizon, max(3, n // 10))
     oos_smapes = {}
     for m in trained_models:
@@ -738,24 +701,19 @@ def run_pipeline(df, date_col, value_col,
             m, values_orig, prep, horizon_cv, freq=freq
         )
 
-    # Step 7: 앙상블
     ens = Ensemble(trained_models, oos_smapes, ci=ci)
     ens_result  = ens.predict(horizon)
     ens_fitted  = ens.get_fitted()
     ens_metrics = compute_metrics(values_orig, ens_fitted, period=period)
 
-    # Step 8: 날짜
     last_date    = pd.to_datetime(df[date_col].iloc[-1])
     future_dates = generate_future_dates(last_date, freq, horizon)
 
-    # Step 9: 잔차 ACF
     residuals  = values_orig - ens_fitted
     acf_result = compute_acf(residuals)
 
-    # Step 10: 백테스트
     backtest = rolling_backtest(values_orig, min(horizon, 12), n_windows=3)
 
-    # 나이브 SMAPE
     naive_pred = np.roll(values_orig, 1)
     naive_pred[0] = values_orig[0]
     denom = (np.abs(values_orig) + np.abs(naive_pred)) / 2 + 1e-10
