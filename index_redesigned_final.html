@@ -259,7 +259,7 @@
       <div class="brand-mark">TF</div>
       <div class="brand-text">
         <div class="brand-title">TimeFlow Forecast Workspace</div>
-        <div class="brand-sub">CSV 업로드부터 예측, 검증, AI 인사이트까지 한 흐름으로</div>
+        <div class="brand-sub">CSV 업로드부터 예측, 검증, GPT 인사이트까지 한 흐름으로</div>
       </div>
     </div>
     <div class="status-badge">
@@ -273,12 +273,12 @@
       <div class="hero-main">
         <div class="eyebrow">Time Series Forecasting</div>
         <h1 class="hero-title">데이터를 올리면<br>예측 결과가 바로<br>정리됩니다</h1>
-        <p class="hero-desc">CSV 업로드만으로 핵심 지표, 미래 예측, 모델 비교, AI 인사이트까지 한 화면에서 확인할 수 있습니다.</p>
+        <p class="hero-desc">CSV 업로드만으로 핵심 지표, 미래 예측, 모델 비교, GPT 인사이트까지 한 화면에서 확인할 수 있습니다.</p>
       </div>
       <div class="hero-card">
         <div class="hero-card-label">분석 흐름</div>
         <div class="hero-card-value">4 Step</div>
-        <div class="hero-card-sub">업로드부터 AI 인사이트까지 끊김 없이</div>
+        <div class="hero-card-sub">업로드부터 GPT 인사이트까지 끊김 없이</div>
       </div>
       <div class="hero-card">
         <div class="hero-card-label">핵심 지표</div>
@@ -286,7 +286,7 @@
         <div class="hero-card-sub">오차와 설명력을 상단에서 바로 확인</div>
       </div>
       <div class="hero-card">
-        <div class="hero-card-label">AI 인사이트</div>
+        <div class="hero-card-label">GPT 인사이트</div>
         <div class="hero-card-value">자동 해석</div>
         <div class="hero-card-sub">데이터 특성과 활용 방안 자동 생성</div>
       </div>
@@ -366,12 +366,12 @@
       <section class="empty-state" id="emptyState">
         <div class="empty-icon">📈</div>
         <div class="empty-title">CSV를 올리면 이 영역에 결과가 정리됩니다</div>
-        <p class="empty-sub">왼쪽에서 파일과 설정을 고른 뒤 <strong>예측 시작</strong>을 누르면, 오른쪽에서 핵심 KPI, 예측 차트, 모델 비교, AI 인사이트를 순서대로 확인할 수 있습니다.</p>
+        <p class="empty-sub">왼쪽에서 파일과 설정을 고른 뒤 <strong>예측 시작</strong>을 누르면, 오른쪽에서 핵심 KPI, 예측 차트, 모델 비교, GPT 인사이트를 순서대로 확인할 수 있습니다.</p>
         <div class="empty-pills">
           <span class="pill">자동 진단: 데이터 개수 · 빈도 · 결측치 · 이상치</span>
           <span class="pill">예측 결과: 실제값 · 피팅값 · 예측값 · 신뢰구간</span>
           <span class="pill">모델 비교: 개별 모델 성능과 앙상블 성능</span>
-          <span class="pill">AI 인사이트: 데이터 해석 + 결과 평가 + 활용 제언</span>
+          <span class="pill">GPT 인사이트: 데이터 해석 + 결과 평가 + 활용 제언</span>
         </div>
       </section>
 
@@ -396,7 +396,7 @@
         <div class="insight-row" id="insightRow"></div>
 
         <div class="tabs">
-          <button class="tab" onclick="switchTab('insight', this)">🧠 AI 인사이트</button>
+          <button class="tab" onclick="switchTab('insight', this)">🧠 GPT 인사이트</button>
           <button class="tab active" onclick="switchTab('eda', this)">📊 EDA 탐색</button>
           <button class="tab" onclick="switchTab('forecast', this)">🔮 예측 결과</button>
           <button class="tab" onclick="switchTab('leaderboard', this)">🏆 모델 비교</button>
@@ -405,7 +405,7 @@
           <button class="tab" onclick="switchTab('backtest', this)">⏱ 백테스트</button>
         </div>
 
-        <!-- ─── AI 인사이트 탭 ─────────────────────── -->
+        <!-- ─── GPT 인사이트 탭 ─────────────────────── -->
         <div class="section" id="tab-insight">
           <!-- 종합 판정 배너 -->
           <div id="verdictBanner" class="verdict-banner"></div>
@@ -420,22 +420,22 @@
             <div id="ruleInsightContent"></div>
           </div>
 
-          <!-- AI 인사이트 (Claude API) -->
+          <!-- GPT 인사이트 (Claude API) -->
           <div class="ai-insight-wrap" id="aiInsightWrap">
             <div class="ai-insight-header">
-              <div class="ai-badge">🤖 AI 분석</div>
+              <div class="ai-badge">🤖 GPT 분석</div>
               <div>
-                <div style="font-size:17px;font-weight:800;">Claude AI 심층 인사이트</div>
-                <div style="font-size:13px;color:var(--text-soft);">예측 결과를 바탕으로 실무 활용 방안을 AI가 분석합니다</div>
+                <div style="font-size:17px;font-weight:800;">GPT-4o mini 심층 인사이트</div>
+                <div style="font-size:13px;color:var(--text-soft);">예측 결과를 바탕으로 실무 활용 방안을 GPT-4o mini가 분석합니다</div>
               </div>
             </div>
             <div id="aiInsightContent">
               <div style="color:var(--text-soft);font-size:15px;padding:12px 0;">
-                아래 버튼을 눌러 AI 심층 분석을 시작하세요. (ANTHROPIC_API_KEY 필요)
+                아래 버튼을 눌러 GPT 심층 분석을 시작하세요. (OPENAI_API_KEY 필요)
               </div>
             </div>
             <button class="btn-insight" id="aiInsightBtn" onclick="loadAIInsight()" style="margin-top:16px;">
-              🤖 AI 심층 분석 시작
+              🤖 GPT 심층 분석 시작
             </button>
           </div>
         </div>
@@ -977,7 +977,7 @@
     if (!params) return;
     btn.disabled = true;
     document.getElementById('aiInsightContent').innerHTML = `
-      <div class="ai-loading"><div class="ai-spinner"></div><span>AI가 예측 결과를 분석하고 있습니다...</span></div>`;
+      <div class="ai-loading"><div class="ai-spinner"></div><span>GPT-4o mini가 예측 결과를 분석하고 있습니다...</span></div>`;
     try {
       const resp = await fetch('/insight', {
         method: 'POST',
@@ -996,7 +996,7 @@
       btn.textContent = '🔄 다시 분석하기';
       btn.disabled = false;
     } catch(err) {
-      document.getElementById('aiInsightContent').innerHTML = `<div class="alert-item err">AI 분석 오류: ${err.message}</div>`;
+      document.getElementById('aiInsightContent').innerHTML = `<div class="alert-item err">GPT 분석 오류: ${err.message}</div>`;
       btn.textContent = '🤖 다시 시도하기';
       btn.disabled = false;
     }
