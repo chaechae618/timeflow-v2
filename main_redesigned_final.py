@@ -1,5 +1,5 @@
 """
-TimeFlow — FastAPI 백엔드 (전면 보완 버전)
+TimeFlow — FastAPI 백엔드 (인사이트 강화 버전)
 """
 
 from fastapi import FastAPI, UploadFile, File, Form
@@ -16,8 +16,7 @@ try:
 except ImportError:
     ENGINE_OK = False
 
-# ── 환경변수에서 API 키 읽기 ──────────────────────────────
-NEWS_API_KEY     = os.environ.get("NEWS_API_KEY", "")
+NEWS_API_KEY      = os.environ.get("NEWS_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 app = FastAPI(title="TimeFlow API")
@@ -43,7 +42,7 @@ async def forecast(
     models:   str        = Form("naive,ets,arima,stl"),
 ):
     if not ENGINE_OK:
-        return JSONResponse({"error": "forecast_engine_real.py를 같은 폴더에 두세요."}, status_code=500)
+        return JSONResponse({"error": "forecast_engine_final.py를 같은 폴더에 두세요."}, status_code=500)
 
     try:
         content = await file.read()
@@ -53,9 +52,7 @@ async def forecast(
         df["y"]  = pd.to_numeric(df["y"], errors="coerce")
         df = df[["ds", "y"]].reset_index(drop=True)
 
-        # ── 원본 결측치 수를 dropna() 전에 기록 ──────────────
         original_null_count = int(df["y"].isna().sum())
-
         df = df.dropna().reset_index(drop=True)
 
         if len(df) < 20:
@@ -102,7 +99,17 @@ async def forecast(
         ens_pred      = _safe_list(result["ensemble"]["pred"])
         ens_lower     = _safe_list(result["ensemble"]["lower"])
         ens_upper     = _safe_list(result["ensemble"]["upper"])
-        ens_residuals = [float(v - f) for v, f in zip(values_orig, ens_fitted)]
+        ens_residuals = [float(v - f) if (f is not None and v is not None) else 0.0
+                         for v, f in zip(values_orig, ens_fitted)]
+
+        # 오차 절댓값 시계열 (차트용)
+        abs_errors = [abs(e) for e in ens_residuals]
+        pct_errors = []
+        for v, e in zip(values_orig, ens_residuals):
+            if abs(v) > 1e-6:
+                pct_errors.append(round(abs(e) / abs(v) * 100, 2))
+            else:
+                pct_errors.append(0.0)
 
         stl = result["stl"]
         acf_result = result.get("acf_result", {})
@@ -135,6 +142,8 @@ async def forecast(
                 "upper":      ens_upper,
                 "fitted":     ens_fitted,
                 "residuals":  ens_residuals,
+                "absErrors":  abs_errors,
+                "pctErrors":  pct_errors,
                 "mae":        round(float(ens_metrics.get("MAE",   0)), 4),
                 "rmse":       round(float(ens_metrics.get("RMSE",  0)), 4),
                 "smape":      round(float(ens_metrics.get("SMAPE", 0)), 4),
@@ -176,7 +185,7 @@ async def forecast(
 
             "diagnostics": {
                 "n":            diag.get("n", 0),
-                "nullCount":    original_null_count,          # ← 원본 결측치 수 (dropna 전)
+                "nullCount":    original_null_count,
                 "outlierCount": diag.get("outlier_count", 0),
                 "outlierPct":   diag.get("outlier_pct", 0),
                 "freq":         diag.get("freq", "unknown"),
@@ -228,14 +237,12 @@ def _safe_list(arr):
         return []
 
 
-# ── 뉴스 API ──────────────────────────────────────────────
 @app.get("/news")
 async def get_news(keyword: str = "시계열 예측", lang: str = "ko"):
     if not NEWS_API_KEY:
         return JSONResponse({"error": "NEWS_API_KEY가 설정되지 않았습니다."}, status_code=400)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            # 한국어 뉴스 우선, 없으면 영어로 fallback
             resp = await client.get(
                 "https://newsapi.org/v2/everything",
                 params={
@@ -250,7 +257,6 @@ async def get_news(keyword: str = "시계열 예측", lang: str = "ko"):
 
         articles = data.get("articles", [])
         if not articles and lang == "ko":
-            # 한국어 결과 없으면 영어로 재시도
             async with httpx.AsyncClient(timeout=10) as client:
                 resp2 = await client.get(
                     "https://newsapi.org/v2/everything",
@@ -284,34 +290,47 @@ async def get_news(keyword: str = "시계열 예측", lang: str = "ko"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-# ── AI 인사이트 (Claude API) ───────────────────────────────
+# ── AI 인사이트 (Claude API) ― 강화 버전 ──────────────────
 @app.post("/insight")
 async def get_insight(payload: dict):
     if not ANTHROPIC_API_KEY:
         return JSONResponse({"error": "ANTHROPIC_API_KEY가 설정되지 않았습니다."}, status_code=400)
     try:
-        # 예측 결과 요약 추출
-        smape      = payload.get("smape", 0)
-        mase       = payload.get("mase", 0)
-        ts         = payload.get("ts", 0)
-        r2         = payload.get("r2", 0)
-        trend_str  = payload.get("trendStrength", 0)
-        season_str = payload.get("seasonStrength", 0)
-        period     = payload.get("period", 12)
-        freq       = payload.get("freq", "MS")
-        horizon    = payload.get("horizon", 12)
-        n          = payload.get("n", 0)
-        date_start = payload.get("dateStart", "")
-        date_end   = payload.get("dateEnd", "")
-        val_col    = payload.get("valCol", "값")
+        smape       = payload.get("smape", 0)
+        mase        = payload.get("mase", 0)
+        ts          = payload.get("ts", 0)
+        r2          = payload.get("r2", 0)
+        trend_str   = payload.get("trendStrength", 0)
+        season_str  = payload.get("seasonStrength", 0)
+        period      = payload.get("period", 12)
+        freq        = payload.get("freq", "MS")
+        horizon     = payload.get("horizon", 12)
+        n           = payload.get("n", 0)
+        date_start  = payload.get("dateStart", "")
+        date_end    = payload.get("dateEnd", "")
+        val_col     = payload.get("valCol", "값")
         naive_smape = payload.get("naiveSmape", 0)
         pred_values = payload.get("predValues", [])
         bias_status = payload.get("biasStatus", "편향 없음")
-        strategy   = payload.get("strategy", "")
+        strategy    = payload.get("strategy", "")
+        data_mean   = payload.get("mean", 0)
+        data_std    = payload.get("std", 0)
+        data_min    = payload.get("min", 0)
+        data_max    = payload.get("max", 0)
+        best_model  = payload.get("bestModel", "")
+        backtest_smape = payload.get("backtestSmape", 0)
+        overfit_ratio  = payload.get("overfitRatio", 1.0)
 
         freq_label = {"MS":"월별","D":"일별","W":"주별","H":"시간별","QS":"분기별"}.get(freq, freq)
-        mase_vs = "나이브 모델 대비 우수" if mase < 1 else "나이브 모델보다 낮음"
-        ts_eval  = "편향 없음" if abs(ts) <= 4 else bias_status
+
+        # 종합 판정 계산
+        bad_flags = sum([smape > 20, mase >= 1, abs(ts) > 4])
+        if bad_flags == 0 and smape <= 10:
+            overall = "신뢰 가능 (우수)"
+        elif bad_flags >= 2 or smape > 20:
+            overall = "재검토 필요 (미흡)"
+        else:
+            overall = "조건부 사용 가능 (양호)"
 
         pred_trend = ""
         if len(pred_values) >= 2:
@@ -319,45 +338,54 @@ async def get_insight(payload: dict):
             pct   = (delta / (abs(pred_values[0]) + 1e-10)) * 100
             pred_trend = f"예측 기간 동안 {'+' if delta > 0 else ''}{pct:.1f}% {'상승' if delta > 0 else '하락'} 전망"
 
+        overfit_note = ""
+        if overfit_ratio > 3:
+            overfit_note = f"⚠️ 과적합 가능성 있음 (백테스트/인샘플 SMAPE 비율: {overfit_ratio:.1f}배)"
+        else:
+            overfit_note = f"✅ 일반화 양호 (백테스트/인샘플 SMAPE 비율: {overfit_ratio:.1f}배)"
+
         prompt = f"""당신은 시계열 데이터 분석 전문가입니다.
-아래 시계열 예측 결과를 분석하여 실무진이 바로 활용할 수 있는 인사이트를 한국어로 작성해주세요.
+아래 시계열 예측 결과를 분석하여 실무진이 바로 활용할 수 있는 핵심 인사이트를 한국어로 작성해주세요.
+수치를 나열하는 것이 아니라, 이 데이터가 '무엇을 말하는지', '예측이 좋은지 나쁜지', '어떻게 활용해야 하는지'에 집중해주세요.
 
 [데이터 기본 정보]
-- 분석 컬럼: {val_col}
-- 데이터 기간: {date_start} ~ {date_end} ({n}개 관측값, {freq_label} 데이터)
+- 분석 대상: {val_col}
+- 기간: {date_start} ~ {date_end} ({n}개 관측값, {freq_label} 데이터)
+- 데이터 범위: {data_min:.1f} ~ {data_max:.1f} (평균 {data_mean:.1f}, 표준편차 {data_std:.1f})
 - 분석 전략: {strategy}
 
-[예측 성능 지표]
-- SMAPE: {smape:.2f}% (나이브 기준: {naive_smape:.2f}%)
-- MASE: {mase:.3f} → {mase_vs}
-- R²: {r2:.3f}
-- 편향(TS): {ts:.2f} → {ts_eval}
+[예측 성능 — 종합 판정: {overall}]
+- SMAPE: {smape:.2f}% (나이브 기준 {naive_smape:.2f}%)
+- MASE: {mase:.3f} ({'나이브보다 우수' if mase < 1 else '나이브보다 낮음'})
+- R²: {r2:.3f} ({'데이터 변동의 ' + str(round(r2*100,1)) + '% 설명'})
+- 편향(TS): {ts:.2f} → {bias_status}
+- 최적 단일 모델: {best_model}
+- 과적합 검증: {overfit_note}
 
 [시계열 구조]
-- 트렌드 강도: {trend_str:.2f} ({'강한 추세' if trend_str > 0.5 else '약한 추세'})
-- 계절성 강도: {season_str:.2f} ({'뚜렷한 계절성' if season_str > 0.5 else '약한 계절성'})
-- 감지된 주기: {period}개({freq_label})
+- 트렌드: {'강함' if trend_str > 0.5 else '약함'} ({trend_str:.0%})
+- 계절성: {'강함' if season_str > 0.5 else '약함'} ({season_str:.0%}), 주기 {period}개({freq_label})
 
-[미래 예측]
+[예측 결과]
 - 예측 기간: {horizon}{freq_label}
 - {pred_trend}
 
-다음 형식으로 작성해주세요 (각 섹션은 2~3문장):
+다음 형식으로 작성해주세요. 각 섹션은 구체적이고 실무적으로, 2~4문장으로 작성:
 
-## 📊 데이터 특성 요약
-(데이터의 주요 패턴과 구조 설명)
+## 📊 이 데이터, 한 줄로 요약하면
+(데이터의 핵심 패턴을 비전문가도 이해할 수 있게 한 문장으로 + 보충 설명)
 
-## 🎯 예측 신뢰도 평가
-(성능 지표를 바탕으로 예측 결과의 신뢰 수준 평가)
+## ✅ 예측 결과, 믿어도 될까요?
+(종합 판정 {overall}의 의미를 쉽게 설명. SMAPE, MASE, TS 등 핵심 지표 해석을 자연어로)
 
-## 📈 미래 전망
-(예측값 기반 단기 전망과 주의사항)
+## 📈 앞으로 어떻게 될까요?
+(예측 기간 동안의 방향성, 변화폭, 불확실성 수준을 실무 언어로 설명)
 
-## ⚠️ 주요 리스크 및 주의사항
-(편향, 계절성, 데이터 특성 기반 실무 주의사항)
+## ⚠️ 주의해야 할 점
+(편향 방향, 계절성, 과적합 여부 등 실무에서 반드시 알아야 할 리스크)
 
-## 💡 실무 활용 제언
-(이 예측 결과를 실무에서 어떻게 활용할지 구체적 제언)"""
+## 💡 이렇게 활용하세요
+(이 예측을 실제 업무에서 어떻게 쓸지 구체적이고 실행 가능한 제언 2~3가지)"""
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
@@ -369,12 +397,11 @@ async def get_insight(payload: dict):
                 },
                 json={
                     "model":      "claude-haiku-4-5-20251001",
-                    "max_tokens": 1500,
+                    "max_tokens": 1800,
                     "messages":   [{"role": "user", "content": prompt}]
                 }
             )
             result = resp.json()
-            print("Anthropic API 응답:", result)  # 이 줄 추가
 
         text = result.get("content", [{}])[0].get("text", "인사이트 생성에 실패했습니다.")
         return {"ok": True, "insight": text}
