@@ -16,8 +16,8 @@ try:
 except ImportError:
     ENGINE_OK = False
 
-NEWS_API_KEY      = os.environ.get("NEWS_API_KEY", "")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+NEWS_API_KEY   = os.environ.get("NEWS_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 app = FastAPI(title="TimeFlow API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -290,11 +290,11 @@ async def get_news(keyword: str = "시계열 예측", lang: str = "ko"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-# ── AI 인사이트 (Claude API) ― 강화 버전 ──────────────────
+# ── AI 인사이트 (OpenAI API) ──────────────────────────────
 @app.post("/insight")
 async def get_insight(payload: dict):
-    if not ANTHROPIC_API_KEY:
-        return JSONResponse({"error": "ANTHROPIC_API_KEY가 설정되지 않았습니다."}, status_code=400)
+    if not OPENAI_API_KEY:
+        return JSONResponse({"error": "OPENAI_API_KEY가 설정되지 않았습니다."}, status_code=400)
     try:
         smape       = payload.get("smape", 0)
         mase        = payload.get("mase", 0)
@@ -387,23 +387,40 @@ async def get_insight(payload: dict):
 ## 💡 이렇게 활용하세요
 (이 예측을 실제 업무에서 어떻게 쓸지 구체적이고 실행 가능한 제언 2~3가지)"""
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
+        async with httpx.AsyncClient(timeout=60) as client:
+            api_resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
                 headers={
-                    "x-api-key":         ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type":      "application/json",
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type":  "application/json",
                 },
                 json={
-                    "model":      "claude-haiku-4-5-20251001",
+                    "model":      "gpt-4o-mini",
                     "max_tokens": 1800,
-                    "messages":   [{"role": "user", "content": prompt}]
+                    "messages":   [
+                        {"role": "system", "content": "당신은 시계열 데이터 분석 전문가입니다. 실무진이 바로 활용할 수 있는 핵심 인사이트를 한국어로 제공합니다."},
+                        {"role": "user",   "content": prompt}
+                    ]
                 }
             )
-            result = resp.json()
 
-        text = result.get("content", [{}])[0].get("text", "인사이트 생성에 실패했습니다.")
+        api_data = api_resp.json()
+        print(f"[OpenAI API] status={api_resp.status_code}, response={str(api_data)[:300]}")
+
+        # HTTP 에러 체크
+        if api_resp.status_code != 200:
+            err_msg = api_data.get("error", {}).get("message", f"HTTP {api_resp.status_code}")
+            return JSONResponse({"error": f"OpenAI API 오류: {err_msg}"}, status_code=500)
+
+        # content 추출
+        choices = api_data.get("choices", [])
+        if not choices:
+            return JSONResponse({"error": "OpenAI API 응답에 choices가 없습니다."}, status_code=500)
+
+        text = choices[0].get("message", {}).get("content", "")
+        if not text:
+            return JSONResponse({"error": "OpenAI API 응답 텍스트가 비어 있습니다."}, status_code=500)
+
         return {"ok": True, "insight": text}
 
     except Exception as e:
